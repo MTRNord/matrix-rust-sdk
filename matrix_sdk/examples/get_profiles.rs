@@ -45,7 +45,7 @@ async fn login(
         .proxy("http://localhost:8080")?
         .disable_ssl_verification();
     let homeserver_url = Url::parse(&homeserver_url).expect("Couldn't parse the homeserver URL");
-    let client = Client::new_with_config(homeserver_url, None, client_config).unwrap();
+    let client = Client::new_with_config(homeserver_url, client_config).unwrap();
 
     client
         .login(username, password, None, Some("rust-sdk".to_string()))
