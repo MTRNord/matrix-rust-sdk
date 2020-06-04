@@ -18,7 +18,7 @@ use std::io::Error as IoError;
 use std::sync::Arc;
 use url::ParseError;
 
-use async_trait::async_trait;
+use matrix_sdk_common_macros::async_trait;
 use matrix_sdk_common::locks::Mutex;
 use serde_json::Error as SerdeError;
 use thiserror::Error;
@@ -30,9 +30,12 @@ use matrix_sdk_common::identifiers::{DeviceId, RoomId, UserId};
 use olm_rs::errors::{OlmAccountError, OlmGroupSessionError, OlmSessionError};
 
 pub mod memorystore;
+
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "sqlite-cryptostore")]
 pub mod sqlite;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "sqlite-cryptostore")]
 use sqlx::Error as SqlxError;
 
@@ -85,7 +88,7 @@ pub type Result<T> = std::result::Result<T, CryptoStoreError>;
 #[async_trait]
 /// Trait abstracting a store that the `OlmMachine` uses to store cryptographic
 /// keys.
-pub trait CryptoStore: Debug + Send + Sync {
+pub trait CryptoStore: Debug {
     /// Load an account that was previously stored.
     async fn load_account(&mut self) -> Result<Option<Account>>;
 

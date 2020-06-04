@@ -20,7 +20,7 @@ use std::result::Result as StdResult;
 use std::sync::Arc;
 use url::Url;
 
-use async_trait::async_trait;
+use matrix_sdk_common_macros::async_trait;
 use matrix_sdk_common::locks::Mutex;
 use olm_rs::PicklingMode;
 use sqlx::{query, query_as, sqlite::SqliteQueryAs, Connect, Executor, SqliteConnection};
@@ -796,6 +796,11 @@ mod test {
         Account, CryptoStore, InboundGroupSession, RoomId, Session, SqliteStore, TryFrom, UserId,
     };
 
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::*;
+
+    use matrix_sdk_test::async_test;
+    
     static USER_ID: &str = "@example:localhost";
     static DEVICE_ID: &str = "DEVICEID";
 
@@ -861,7 +866,7 @@ mod test {
         (alice, session)
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn create_store() {
         let tmpdir = tempdir().unwrap();
         let tmpdir_path = tmpdir.path().to_str().unwrap();
@@ -870,7 +875,7 @@ mod test {
             .expect("Can't create store");
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn save_account() {
         let (mut store, _dir) = get_store(None).await;
         assert!(store.load_account().await.unwrap().is_none());
@@ -882,7 +887,7 @@ mod test {
             .expect("Can't save account");
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn load_account() {
         let (mut store, _dir) = get_store(None).await;
         let account = get_account();
@@ -898,7 +903,7 @@ mod test {
         assert_eq!(account, loaded_account);
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn load_account_with_passphrase() {
         let (mut store, _dir) = get_store(Some("secret_passphrase")).await;
         let account = get_account();
@@ -914,7 +919,7 @@ mod test {
         assert_eq!(account, loaded_account);
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn save_and_share_account() {
         let (mut store, _dir) = get_store(None).await;
         let account = get_account();
@@ -937,7 +942,7 @@ mod test {
         assert_eq!(account, loaded_account);
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn save_session() {
         let (mut store, _dir) = get_store(None).await;
         let (account, session) = get_account_and_session().await;
@@ -952,7 +957,7 @@ mod test {
         store.save_sessions(&[session]).await.unwrap();
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn load_sessions() {
         let (mut store, _dir) = get_store(None).await;
         let (account, session) = get_account_and_session().await;
@@ -971,7 +976,7 @@ mod test {
         assert_eq!(&session, loaded_session);
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn add_and_save_session() {
         let (mut store, dir) = get_store(None).await;
         let (account, session) = get_account_and_session().await;
@@ -1007,7 +1012,7 @@ mod test {
         assert_eq!(session_id, session.session_id());
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn save_inbound_group_session() {
         let (account, mut store, _dir) = get_loaded_store().await;
 
@@ -1027,7 +1032,7 @@ mod test {
             .expect("Can't save group session");
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn load_inbound_group_session() {
         let (account, mut store, _dir) = get_loaded_store().await;
 
@@ -1060,7 +1065,7 @@ mod test {
         assert_eq!(session, loaded_session);
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn test_tracked_users() {
         let (_account, mut store, dir) = get_loaded_store().await;
         let device = get_device();
@@ -1112,7 +1117,7 @@ mod test {
         assert!(!store.users_for_key_query().contains(device.user_id()));
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn device_saving() {
         let (_account, store, dir) = get_loaded_store().await;
         let device = get_device();
@@ -1147,7 +1152,7 @@ mod test {
         assert_eq!(user_devices.devices().nth(0).unwrap(), &device);
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn device_deleting() {
         let (_account, store, dir) = get_loaded_store().await;
         let device = get_device();

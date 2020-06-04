@@ -1609,6 +1609,11 @@ mod test {
     };
     use matrix_sdk_common::identifiers::{DeviceId, EventId, RoomId, UserId};
 
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::*;
+
+    use matrix_sdk_test::async_test;
+    
     fn alice_id() -> UserId {
         UserId::try_from("@alice:example.org").unwrap()
     }
@@ -1759,13 +1764,13 @@ mod test {
         (alice, bob)
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn create_olm_machine() {
         let machine = OlmMachine::new(&user_id(), DEVICE_ID);
         assert!(machine.should_upload_keys().await);
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn receive_keys_upload_response() {
         let mut machine = OlmMachine::new(&user_id(), DEVICE_ID);
         let mut response = keys_upload_response();
@@ -1803,7 +1808,7 @@ mod test {
         assert!(!machine.should_upload_keys().await);
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn generate_one_time_keys() {
         let mut machine = OlmMachine::new(&user_id(), DEVICE_ID);
 
@@ -1830,7 +1835,7 @@ mod test {
         assert!(machine.generate_one_time_keys().await.is_err());
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn test_device_key_signing() {
         let machine = OlmMachine::new(&user_id(), DEVICE_ID);
 
@@ -1847,7 +1852,7 @@ mod test {
         assert!(ret.is_ok());
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn tests_session_invalidation() {
         let mut machine = OlmMachine::new(&user_id(), DEVICE_ID);
         let room_id = RoomId::try_from("!test:example.org").unwrap();
@@ -1863,7 +1868,7 @@ mod test {
         assert!(machine.outbound_group_sessions.get(&room_id).is_none());
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn test_invalid_signature() {
         let machine = OlmMachine::new(&user_id(), DEVICE_ID);
 
@@ -1878,7 +1883,7 @@ mod test {
         assert!(ret.is_err());
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn test_one_time_key_signing() {
         let mut machine = OlmMachine::new(&user_id(), DEVICE_ID);
         machine.uploaded_signed_key_count = Some(AtomicU64::new(49));
@@ -1898,7 +1903,7 @@ mod test {
         assert!(ret.is_ok());
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn test_keys_for_upload() {
         let mut machine = OlmMachine::new(&user_id(), DEVICE_ID);
         machine.uploaded_signed_key_count = Some(AtomicU64::default());
@@ -1942,7 +1947,7 @@ mod test {
         assert!(ret.is_err());
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn test_keys_query() {
         let (mut machine, _) = get_prepared_machine().await;
         let response = keys_query_response();
@@ -1967,7 +1972,7 @@ mod test {
         assert_eq!(device.device_id(), &alice_device_id);
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn test_missing_sessions_calculation() {
         let (mut machine, _) = get_machine_after_query().await;
 
@@ -1984,7 +1989,7 @@ mod test {
         assert!(user_sessions.contains_key(&alice_device));
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn test_session_creation() {
         let (mut alice_machine, bob_machine, one_time_keys) = get_machine_pair().await;
 
@@ -2018,7 +2023,7 @@ mod test {
         assert!(!session.lock().await.is_empty())
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn test_olm_encryption() {
         let (mut alice, mut bob) = get_machine_pair_with_session().await;
 
@@ -2056,7 +2061,7 @@ mod test {
         }
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn test_room_key_sharing() {
         let (mut alice, mut bob) = get_machine_pair_with_session().await;
 
@@ -2095,7 +2100,7 @@ mod test {
         assert!(session.unwrap().is_some());
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn test_megolm_encryption() {
         let (mut alice, mut bob) = get_machine_pair_with_setup_sessions().await;
         let room_id = RoomId::try_from("!test:example.org").unwrap();

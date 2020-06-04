@@ -217,7 +217,12 @@ mod test {
     use crate::olm::{InboundGroupSession, OutboundGroupSession};
     use matrix_sdk_common::identifiers::RoomId;
 
-    #[tokio::test]
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::*;
+
+    use matrix_sdk_test::async_test;
+    
+    #[async_test]
     async fn test_session_store() {
         let (_, session) = get_account_and_session().await;
 
@@ -234,7 +239,7 @@ mod test {
         assert_eq!(&session, loaded_session);
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn test_session_store_bulk_storing() {
         let (_, session) = get_account_and_session().await;
 
@@ -249,7 +254,7 @@ mod test {
         assert_eq!(&session, loaded_session);
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn test_group_session_store() {
         let room_id = RoomId::try_from("!test:localhost").unwrap();
 
@@ -277,7 +282,7 @@ mod test {
         assert_eq!(inbound, loaded_session);
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn test_device_store() {
         let device = get_device();
         let store = DeviceStore::new();

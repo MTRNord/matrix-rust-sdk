@@ -632,6 +632,11 @@ pub(crate) mod test {
     use std::collections::BTreeMap;
     use std::convert::TryFrom;
 
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::*;
+
+    use matrix_sdk_test::async_test;
+
     pub(crate) async fn get_account_and_session() -> (Account, Session) {
         let alice = Account::new();
 
@@ -681,7 +686,7 @@ pub(crate) mod test {
         assert!(account.shared());
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn one_time_keys_creation() {
         let account = Account::new();
         let one_time_keys = account.one_time_keys().await;
@@ -708,7 +713,7 @@ pub(crate) mod test {
         assert!(one_time_keys.curve25519().is_empty());
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn session_creation() {
         let alice = Account::new();
         let bob = Account::new();
@@ -761,7 +766,7 @@ pub(crate) mod test {
         assert_eq!(plaintext, decyrpted);
     }
 
-    #[tokio::test]
+    #[async_test]
     async fn group_session_creation() {
         let room_id = RoomId::try_from("!test:localhost").unwrap();
 

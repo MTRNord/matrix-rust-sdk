@@ -17,6 +17,7 @@ sqlite-cryptostore = ["sqlx"]
 [dependencies]
 async-trait = "0.1.31"
 
+matrix-sdk-common-macros = { version = "0.1.0", path = "../matrix_sdk_common_macros" }
 matrix-sdk-common = { version = "0.1.0", path = "../matrix_sdk_common" }
 
 olm-rs = { version = "0.5.0", features = ["serde"] }
@@ -44,8 +45,14 @@ default-features = false
 features = ["runtime-tokio", "sqlite"]
 
 [dev-dependencies]
-tokio = { version = "0.2.21", features = ["rt-threaded", "macros"] }
+matrix-sdk-test = { version = "0.1.0", path = "../matrix_sdk_test" }
 ruma-identifiers = { version = "0.16.1", features = ["rand"] }
 serde_json = "1.0.53"
 tempfile = "3.1.0"
 http = "0.2.1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "0.2.21", features = ["rt-threaded", "macros"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3.12"
