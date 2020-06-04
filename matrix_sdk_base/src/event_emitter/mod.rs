@@ -14,8 +14,10 @@
 // limitations under the License.
 use std::sync::Arc;
 
-use matrix_sdk_common::locks::RwLock;
 use serde_json::value::RawValue as RawJsonValue;
+
+use matrix_sdk_common::locks::RwLock;
+use matrix_sdk_common_macros::async_trait;
 
 use crate::events::{
     fully_read::FullyReadEvent,
@@ -78,10 +80,11 @@ pub enum CustomOrRawEvent<'c> {
 /// #     EventEmitter, SyncRoom
 /// # };
 /// # use matrix_sdk_common::locks::RwLock;
+/// # use matrix_sdk_common_macros::async_trait;
 ///
 /// struct EventCallback;
 ///
-/// #[async_trait::async_trait]
+/// #[async_trait]
 /// impl EventEmitter for EventCallback {
 ///     async fn on_room_message(&self, room: SyncRoom, event: &MessageEvent) {
 ///         if let SyncRoom::Joined(room) = room {
@@ -106,7 +109,7 @@ pub enum CustomOrRawEvent<'c> {
 ///     }
 /// }
 /// ```
-#[async_trait::async_trait]
+#[async_trait]
 pub trait EventEmitter: Send + Sync {
     // ROOM EVENTS from `IncomingTimeline`
     /// Fires when `Client` receives a `RoomEvent::RoomMember` event.
@@ -198,18 +201,25 @@ pub trait EventEmitter: Send + Sync {
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use matrix_sdk_common::locks::Mutex;
-    use matrix_sdk_test::{async_test, sync_response, SyncResponseFile};
+    use std::convert::TryFrom;
     use std::sync::Arc;
 
     #[cfg(target_arch = "wasm32")]
     pub use wasm_bindgen_test::*;
 
+    use matrix_sdk_common::locks::Mutex;
+    use matrix_sdk_common_macros::async_trait;
+    use matrix_sdk_test::{async_test, sync_response, SyncResponseFile};
+
+    use crate::identifiers::UserId;
+    use crate::{BaseClient, Session};
+
+    use super::*;
+
     #[derive(Clone)]
     pub struct EvEmitterTest(Arc<Mutex<Vec<String>>>);
 
-    #[async_trait::async_trait]
+    #[async_trait]
     impl EventEmitter for EvEmitterTest {
         async fn on_room_member(&self, _: SyncRoom, _: &MemberEvent) {
             self.0.lock().await.push("member".to_string())
@@ -323,11 +333,6 @@ mod test {
             self.0.lock().await.push("presence event".to_string())
         }
     }
-
-    use crate::identifiers::UserId;
-    use crate::{BaseClient, Session};
-
-    use std::convert::TryFrom;
 
     async fn get_client() -> BaseClient {
         let session = Session {

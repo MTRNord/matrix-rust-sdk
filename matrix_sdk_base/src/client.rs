@@ -17,35 +17,20 @@ use std::collections::HashMap;
 #[cfg(feature = "encryption")]
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use zeroize::Zeroizing;
-
 use std::result::Result as StdResult;
+use std::sync::Arc;
 
-use crate::api::r0 as api;
-use crate::error::Result;
-use crate::events::collections::all::{RoomEvent, StateEvent};
-use crate::events::presence::PresenceEvent;
-// `NonRoomEvent` is what it is aliased as
-use crate::event_emitter::CustomOrRawEvent;
-use crate::events::collections::only::Event as NonRoomEvent;
-use crate::events::ignored_user_list::IgnoredUserListEvent;
-use crate::events::push_rules::{PushRulesEvent, Ruleset};
-use crate::events::room::member::MemberEventContent;
-use crate::events::stripped::AnyStrippedStateEvent;
-use crate::events::EventJson;
-use crate::identifiers::{RoomId, UserId};
-use crate::models::Room;
-use crate::session::Session;
-use crate::state::{AllRooms, ClientState, StateStore};
-use crate::EventEmitter;
+use zeroize::Zeroizing;
 
 #[cfg(feature = "encryption")]
 use matrix_sdk_common::locks::Mutex;
 use matrix_sdk_common::locks::RwLock;
-use std::ops::Deref;
+#[cfg(feature = "encryption")]
+use matrix_sdk_crypto::{CryptoStore, OlmError, OlmMachine, OneTimeKeys};
 
+use crate::api::r0 as api;
 #[cfg(feature = "encryption")]
 use crate::api::r0::keys::{
     claim_keys::Response as KeysClaimResponse, get_keys::Response as KeysQueryResponse,
@@ -53,14 +38,28 @@ use crate::api::r0::keys::{
 };
 #[cfg(feature = "encryption")]
 use crate::api::r0::to_device::send_event_to_device;
+use crate::error::Result;
+// `NonRoomEvent` is what it is aliased as
+use crate::event_emitter::CustomOrRawEvent;
+use crate::events::collections::all::{RoomEvent, StateEvent};
+use crate::events::collections::only::Event as NonRoomEvent;
+use crate::events::ignored_user_list::IgnoredUserListEvent;
+use crate::events::presence::PresenceEvent;
+use crate::events::push_rules::{PushRulesEvent, Ruleset};
+use crate::events::room::member::MemberEventContent;
 #[cfg(feature = "encryption")]
 use crate::events::room::{encrypted::EncryptedEventContent, message::MessageEventContent};
+use crate::events::stripped::AnyStrippedStateEvent;
+use crate::events::EventJson;
 #[cfg(feature = "encryption")]
 use crate::identifiers::DeviceId;
+use crate::identifiers::{RoomId, UserId};
+use crate::models::Room;
+use crate::session::Session;
+use crate::state::{AllRooms, ClientState, StateStore};
+use crate::EventEmitter;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::JsonStore;
-#[cfg(feature = "encryption")]
-use matrix_sdk_crypto::{CryptoStore, OlmError, OlmMachine, OneTimeKeys};
 
 pub type Token = String;
 
@@ -1760,17 +1759,19 @@ impl BaseClient {
 
 #[cfg(test)]
 mod test {
+    use std::convert::TryFrom;
+
+    use serde_json::json;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::*;
+
+    use matrix_sdk_test::{async_test, EventBuilder, EventsFile};
+
     use crate::identifiers::{RoomId, UserId};
     use crate::{
         events::{collections::all::RoomEvent, stripped::AnyStrippedStateEvent},
         BaseClient, Session,
     };
-    use matrix_sdk_test::{async_test, EventBuilder, EventsFile};
-    use serde_json::json;
-    use std::convert::TryFrom;
-
-    #[cfg(target_arch = "wasm32")]
-    use wasm_bindgen_test::*;
 
     async fn get_client() -> BaseClient {
         let session = Session {
@@ -1925,13 +1926,14 @@ mod test {
         use crate::{EventEmitter, SyncRoom};
         use matrix_sdk_common::events::room::member::{MemberEvent, MembershipChange};
         use matrix_sdk_common::locks::RwLock;
+        use matrix_sdk_common_macros::async_trait;
         use std::sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
         };
 
         struct EE(Arc<AtomicBool>);
-        #[async_trait::async_trait]
+        #[async_trait]
         impl EventEmitter for EE {
             async fn on_room_member(&self, room: SyncRoom, event: &MemberEvent) {
                 if let SyncRoom::Joined(_) = room {
@@ -2021,13 +2023,14 @@ mod test {
 
         use crate::{EventEmitter, SyncRoom};
         use matrix_sdk_common::locks::RwLock;
+        use matrix_sdk_common_macros::async_trait;
         use std::sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
         };
 
         struct EE(Arc<AtomicBool>);
-        #[async_trait::async_trait]
+        #[async_trait]
         impl EventEmitter for EE {
             async fn on_unrecognized_event(&self, room: SyncRoom, event: &CustomOrRawEvent<'_>) {
                 if let SyncRoom::Joined(_) = room {
@@ -2117,13 +2120,14 @@ mod test {
 
         use crate::{EventEmitter, SyncRoom};
         use matrix_sdk_common::locks::RwLock;
+        use matrix_sdk_common_macros::async_trait;
         use std::sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
         };
 
         struct EE(Arc<AtomicBool>);
-        #[async_trait::async_trait]
+        #[async_trait]
         impl EventEmitter for EE {
             async fn on_unrecognized_event(&self, room: SyncRoom, event: &CustomOrRawEvent<'_>) {
                 if let SyncRoom::Joined(_) = room {
