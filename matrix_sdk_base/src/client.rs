@@ -60,6 +60,7 @@ use crate::state::{AllRooms, ClientState, StateStore};
 use crate::EventEmitter;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::JsonStore;
+use matrix_sdk_common_macros::async_trait;
 
 pub type Token = String;
 
