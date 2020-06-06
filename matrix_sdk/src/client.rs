@@ -1076,12 +1076,16 @@ impl Client {
         loop {
             let response = self.sync(sync_settings.clone()).await;
 
-            let response = if let Ok(r) = response {
-                r
-            } else {
-                sleep::new(Duration::from_secs(1)).await;
+            let response = match response {
+                Ok(r) => {
+                    r
+                },
+                Err(e) => {
+                    warn!("Sync Error: {:#?}", e);
+                    sleep::new(Duration::from_secs(1)).await;
 
-                continue;
+                    continue;
+                },
             };
 
             // TODO send out to-device messages here
