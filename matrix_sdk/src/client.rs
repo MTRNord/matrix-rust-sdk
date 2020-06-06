@@ -29,7 +29,7 @@ use futures_timer::Delay as sleep;
 use std::future::Future;
 #[cfg(feature = "encryption")]
 use tracing::{debug, warn};
-use tracing::{info, instrument, trace};
+use tracing::{info, instrument, trace, warn};
 
 use http::Method as HttpMethod;
 use http::Response as HttpResponse;
