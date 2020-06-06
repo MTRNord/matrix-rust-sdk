@@ -26,7 +26,7 @@ use matrix_sdk_crypto::{MegolmError, OlmError};
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Internal representation of errors.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum Error {
     /// Queried endpoint requires authentication but was called on an anonymous client.
     #[error("the queried endpoint requires authentication but was called before logging in")]
