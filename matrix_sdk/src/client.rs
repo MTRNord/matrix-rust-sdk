@@ -993,7 +993,7 @@ impl Client {
             filter: Some(Filter::FilterDefinition(FilterDefinition {
                 room: Some(RoomFilter {
                     timeline: Some(RoomEventFilter {
-                        limit: Some(UInt(20)),
+                        limit: Some(UInt::new(20).unwrap()),
                         lazy_load_options: LazyLoadOptions::Enabled {
                             include_redundant_members: true,
                         },
