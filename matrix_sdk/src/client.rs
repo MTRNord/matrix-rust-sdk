@@ -36,9 +36,12 @@ use http::Response as HttpResponse;
 use reqwest::header::{HeaderValue, InvalidHeaderValue, AUTHORIZATION};
 use url::Url;
 
+use crate::api::r0::filter::{FilterDefinition, LazyLoadOptions, RoomEventFilter, RoomFilter};
+use crate::api::r0::sync::sync_events::Filter;
 use crate::events::room::message::MessageEventContent;
 use crate::events::EventType;
 use crate::identifiers::{EventId, RoomId, RoomIdOrAliasId, UserId};
+use crate::js_int::UInt;
 use crate::Endpoint;
 
 #[cfg(feature = "encryption")]
@@ -987,7 +990,19 @@ impl Client {
     #[instrument]
     pub async fn sync(&self, sync_settings: SyncSettings) -> Result<sync_events::Response> {
         let request = sync_events::Request {
-            filter: None,
+            filter: Some(Filter::FilterDefinition(FilterDefinition {
+                room: Some(RoomFilter {
+                    timeline: Some(RoomEventFilter {
+                        limit: Some(UInt(20)),
+                        lazy_load_options: LazyLoadOptions::Enabled {
+                            include_redundant_members: true,
+                        },
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
             since: sync_settings.token,
             full_state: sync_settings.full_state,
             set_presence: sync_events::SetPresence::Online,
@@ -1077,15 +1092,13 @@ impl Client {
             let response = self.sync(sync_settings.clone()).await;
 
             let response = match response {
-                Ok(r) => {
-                    r
-                },
+                Ok(r) => r,
                 Err(e) => {
                     warn!("Sync Error: {:#?}", e);
                     sleep::new(Duration::from_secs(1)).await;
 
                     continue;
-                },
+                }
             };
 
             // TODO send out to-device messages here
