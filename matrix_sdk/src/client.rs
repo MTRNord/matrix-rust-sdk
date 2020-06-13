@@ -17,41 +17,57 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
+use std::future::Future;
 use std::path::Path;
 use std::result::Result as StdResult;
 use std::sync::Arc;
 
+#[cfg(feature = "encryption")]
+use api::r0::keys::{claim_keys, get_keys, upload_keys, KeyAlgorithm};
+use api::r0::membership::{
+    ban_user, forget_room,
+    invite_user::{self, InvitationRecipient},
+    join_room_by_id, join_room_by_id_or_alias, kick_user, leave_room, Invite3pid,
+};
+use api::r0::message::create_message_event;
+use api::r0::message::get_message_events;
+use api::r0::read_marker::set_read_marker;
+use api::r0::receipt::create_receipt;
+use api::r0::room::create_room;
+use api::r0::session::login;
+use api::r0::sync::sync_events;
+#[cfg(feature = "encryption")]
+use api::r0::to_device::send_event_to_device;
+use api::r0::typing::create_typing_event;
+use futures_timer::Delay as sleep;
+use http::Method as HttpMethod;
+use http::Response as HttpResponse;
+use reqwest::header::{HeaderValue, InvalidHeaderValue, AUTHORIZATION};
+#[cfg(feature = "encryption")]
+use tracing::debug;
+use tracing::{info, instrument, trace, warn, error};
+use url::Url;
+
+use matrix_sdk_base::{FromHttpResponseError::Deserialization, ResponseDeserializationError};
+use matrix_sdk_base::{BaseClient, BaseClientConfig, Room, Session, StateStore};
 use matrix_sdk_common::instant::{Duration, Instant};
 use matrix_sdk_common::locks::RwLock;
 use matrix_sdk_common::uuid::Uuid;
 
-use futures_timer::Delay as sleep;
-use std::future::Future;
-//#[cfg(feature = "encryption")]
-use tracing::{debug};
-use tracing::{info, instrument, trace, warn};
-
-use http::Method as HttpMethod;
-use http::Response as HttpResponse;
-use reqwest::header::{HeaderValue, InvalidHeaderValue, AUTHORIZATION};
-use url::Url;
-
+use crate::api;
 use crate::api::r0::filter::{FilterDefinition, LazyLoadOptions, RoomEventFilter, RoomFilter};
 use crate::api::r0::sync::sync_events::Filter;
+use crate::error::Error::RumaResponse;
 use crate::events::room::message::MessageEventContent;
 use crate::events::EventType;
+#[cfg(feature = "encryption")]
+use crate::identifiers::DeviceId;
 use crate::identifiers::{EventId, RoomId, RoomIdOrAliasId, UserId};
 use crate::js_int::UInt;
 use crate::Endpoint;
-
-#[cfg(feature = "encryption")]
-use crate::identifiers::DeviceId;
-
-use crate::api;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::VERSION;
 use crate::{Error, EventEmitter, Result};
-use matrix_sdk_base::{BaseClient, BaseClientConfig, Room, Session, StateStore};
 
 const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -248,24 +264,6 @@ impl SyncSettings {
         self
     }
 }
-
-#[cfg(feature = "encryption")]
-use api::r0::keys::{claim_keys, get_keys, upload_keys, KeyAlgorithm};
-use api::r0::membership::{
-    ban_user, forget_room,
-    invite_user::{self, InvitationRecipient},
-    join_room_by_id, join_room_by_id_or_alias, kick_user, leave_room, Invite3pid,
-};
-use api::r0::message::create_message_event;
-use api::r0::message::get_message_events;
-use api::r0::read_marker::set_read_marker;
-use api::r0::receipt::create_receipt;
-use api::r0::room::create_room;
-use api::r0::session::login;
-use api::r0::sync::sync_events;
-#[cfg(feature = "encryption")]
-use api::r0::to_device::send_event_to_device;
-use api::r0::typing::create_typing_event;
 
 impl Client {
     /// Creates a new client for making HTTP requests to the given homeserver.
@@ -1081,34 +1079,27 @@ impl Client {
     ) where
         C: Future<Output = ()>,
     {
-        debug!("[SDK] start sync_forever!");
         let mut sync_settings = sync_settings;
         let mut last_sync_time: Option<Instant> = None;
 
-        debug!("[SDK] checking token!");
         if sync_settings.token.is_none() {
             sync_settings.token = self.sync_token().await;
         }
 
-        debug!("[SDK] before loop!");
         loop {
-            debug!("[SDK] sync loop!");
             let response = self.sync(sync_settings.clone()).await;
-
-            if response.is_ok() {
-                info!("Got sync SDK")
-            }
 
             let response = match response {
                 Ok(r) => r,
                 Err(e) => {
-                    warn!("Sync Error: {:#?}", e);
+                    if let RumaResponse(Deserialization(e)) = e {
+                        error!("Sync Error: {}", e);
+                    }
                     sleep::new(Duration::from_secs(1)).await;
 
                     continue;
                 }
             };
-
 
             // TODO send out to-device messages here
 
@@ -1296,25 +1287,27 @@ impl Client {
 
 #[cfg(test)]
 mod test {
-    use super::{
-        ban_user, create_receipt, create_typing_event, forget_room, invite_user, kick_user,
-        leave_room, set_read_marker, Invite3pid, MessageEventContent,
-    };
-    use super::{Client, ClientConfig, Session, SyncSettings, Url};
+    use std::convert::TryFrom;
+    use std::path::Path;
+    use std::str::FromStr;
+    use std::time::Duration;
+
+    use mockito::{mock, Matcher};
+    use tempfile::tempdir;
+
+    use matrix_sdk_base::JsonStore;
+    use matrix_sdk_test::{EventBuilder, EventsFile};
+
     use crate::events::collections::all::RoomEvent;
     use crate::events::room::member::MembershipState;
     use crate::events::room::message::TextMessageEventContent;
     use crate::identifiers::{EventId, RoomId, RoomIdOrAliasId, UserId};
 
-    use matrix_sdk_base::JsonStore;
-    use matrix_sdk_test::{EventBuilder, EventsFile};
-    use mockito::{mock, Matcher};
-    use tempfile::tempdir;
-
-    use std::convert::TryFrom;
-    use std::path::Path;
-    use std::str::FromStr;
-    use std::time::Duration;
+    use super::{
+        ban_user, create_receipt, create_typing_event, forget_room, invite_user, kick_user,
+        leave_room, set_read_marker, Invite3pid, MessageEventContent,
+    };
+    use super::{Client, ClientConfig, Session, SyncSettings, Url};
 
     #[tokio::test]
     async fn test_join_leave_room() {
