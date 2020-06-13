@@ -27,7 +27,7 @@ use matrix_sdk_common::uuid::Uuid;
 
 use futures_timer::Delay as sleep;
 use std::future::Future;
-#[cfg(feature = "encryption")]
+//#[cfg(feature = "encryption")]
 use tracing::{debug, warn};
 use tracing::{info, instrument, trace, warn};
 
@@ -1091,6 +1091,10 @@ impl Client {
         loop {
             let response = self.sync(sync_settings.clone()).await;
 
+            if response.is_ok() {
+                info!("Got sync SDK")
+            }
+
             let response = match response {
                 Ok(r) => r,
                 Err(e) => {
@@ -1100,6 +1104,7 @@ impl Client {
                     continue;
                 }
             };
+
 
             // TODO send out to-device messages here
 
