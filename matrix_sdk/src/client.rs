@@ -1081,14 +1081,18 @@ impl Client {
     ) where
         C: Future<Output = ()>,
     {
+        debug!("[SDK] start sync_forever!");
         let mut sync_settings = sync_settings;
         let mut last_sync_time: Option<Instant> = None;
 
+        debug!("[SDK] checking token!");
         if sync_settings.token.is_none() {
             sync_settings.token = self.sync_token().await;
         }
 
+        debug!("[SDK] before loop!");
         loop {
+            debug!("[SDK] sync loop!");
             let response = self.sync(sync_settings.clone()).await;
 
             if response.is_ok() {
