@@ -48,7 +48,7 @@ use tracing::debug;
 use tracing::{info, instrument, trace, warn, error};
 use url::Url;
 
-use matrix_sdk_base::{FromHttpResponseError::Deserialization, ResponseDeserializationError};
+use matrix_sdk_base::{FromHttpResponseError::Deserialization};
 use matrix_sdk_base::{BaseClient, BaseClientConfig, Room, Session, StateStore};
 use matrix_sdk_common::instant::{Duration, Instant};
 use matrix_sdk_common::locks::RwLock;
