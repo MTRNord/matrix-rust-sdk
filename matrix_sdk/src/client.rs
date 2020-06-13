@@ -28,7 +28,7 @@ use matrix_sdk_common::uuid::Uuid;
 use futures_timer::Delay as sleep;
 use std::future::Future;
 //#[cfg(feature = "encryption")]
-use tracing::{debug, warn};
+use tracing::{debug};
 use tracing::{info, instrument, trace, warn};
 
 use http::Method as HttpMethod;
