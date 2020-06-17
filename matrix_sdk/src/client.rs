@@ -38,6 +38,7 @@ use http::Method as HttpMethod;
 use http::Response as HttpResponse;
 use reqwest::header::{HeaderValue, InvalidHeaderValue, AUTHORIZATION};
 use url::Url;
+use crate::js_int::UInt;
 
 use crate::events::room::message::MessageEventContent;
 use crate::events::EventType;
@@ -48,10 +49,12 @@ use crate::Endpoint;
 use crate::identifiers::DeviceId;
 
 use crate::api;
+use crate::api::r0::filter::{FilterDefinition, LazyLoadOptions, RoomEventFilter, RoomFilter};
+use crate::api::r0::sync::sync_events::Filter;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::VERSION;
 use crate::{Error, EventEmitter, Result};
-use matrix_sdk_base::{BaseClient, BaseClientConfig, Room, Session, StateStore};
+use matrix_sdk_base::{BaseClient, BaseClientConfig, Room, Session, StateStore, FromHttpResponseError::Deserialization};
 
 const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -289,6 +292,7 @@ use api::r0::sync::sync_events;
 use api::r0::to_device::send_event_to_device;
 use api::r0::typing::create_typing_event;
 use api::r0::uiaa::UiaaResponse;
+use crate::error::Error::RumaResponse;
 
 impl Client {
     /// Creates a new client for making HTTP requests to the given homeserver.
@@ -1340,7 +1344,9 @@ impl Client {
             let response = match response {
                 Ok(r) => r,
                 Err(e) => {
-                    error!("Received an invalid response: {}", e);
+                    if let RumaResponse(Deserialization(e)) = e {
+                        error!("Sync Error: {}", e);
+                    }
                     sleep::new(Duration::from_secs(1)).await;
                     continue;
                 }
