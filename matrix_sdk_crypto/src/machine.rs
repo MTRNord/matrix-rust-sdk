@@ -37,7 +37,7 @@ use matrix_sdk_common::events::{
         CiphertextInfo, EncryptedEvent, EncryptedEventContent, MegolmV1AesSha2Content,
         OlmV1Curve25519AesSha2Content,
     },
-    room::message::MessageEventContent,
+    room::message::{MessageEventContent,RelatesTo},
     to_device::{
         AnyToDeviceEvent as ToDeviceEvent, ToDeviceEncrypted, ToDeviceForwardedRoomKey,
         ToDeviceRoomKey, ToDeviceRoomKeyRequest,
@@ -55,6 +55,7 @@ use api::r0::{
 };
 
 use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 /// A map from the algorithm and device id to a one-time key.
@@ -1484,7 +1485,7 @@ impl OlmMachine {
         // TODO check if this is from a verified device.
 
         let relates_to: RelatesToHelper = serde_json::from_str(&plaintext)?;
-        println("relates_to: {:?}", relates_to);
+        println!("relates_to: {:?}", relates_to);
         
         let mut decrypted_value = serde_json::from_str::<Value>(&plaintext)?;
         let decrypted_object = decrypted_value
