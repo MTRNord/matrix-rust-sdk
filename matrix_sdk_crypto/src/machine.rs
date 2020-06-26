@@ -1485,7 +1485,7 @@ impl OlmMachine {
         // TODO check if this is from a verified device.
 
         let relates_to: RelatesToHelper = serde_json::from_str(&plaintext)?;
-        println("{:?}", relates_to);
+        println("relates_to: {:?}", relates_to);
         
         let mut decrypted_value = serde_json::from_str::<Value>(&plaintext)?;
         let decrypted_object = decrypted_value
