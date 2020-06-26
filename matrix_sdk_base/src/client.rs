@@ -91,6 +91,11 @@ pub struct RelatesToHelper {
     pub relates_to: Option<RelatesTo>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Foo {
+    content: ReplyToHelper
+}
+
 /// Transform room event by hoisting `prev_content` field from `unsigned` to the top level.
 ///
 /// Due to a [bug in synapse][synapse-bug], `prev_content` often ends up in `unsigned` contrary to
@@ -717,8 +722,8 @@ impl BaseClient {
         room_id: &RoomId,
         event: &mut EventJson<RoomEvent>,
     ) -> Result<(Option<EventJson<RoomEvent>>, bool)> {
-        let helper: RelatesToHelper = serde_json::from_str(event.json().get()).unwrap();
-        println!("RelatesToHelper: {:?}", helper);
+        let helper: Foo = serde_json::from_str(event.json().get()).unwrap();
+        println!("Foo: {:?}", helper);
         match event.deserialize() {
             #[allow(unused_mut)]
             Ok(mut e) => {
