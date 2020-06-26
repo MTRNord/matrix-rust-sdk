@@ -1466,6 +1466,7 @@ impl OlmMachine {
         &mut self,
         event: &EncryptedEvent,
     ) -> MegolmResult<EventJson<RoomEvent>> {
+        println!("EncryptedEvent: {:?}", event);
         let content = match &event.content {
             EncryptedEventContent::MegolmV1AesSha2(c) => c,
             _ => return Err(EventError::UnsupportedAlgorithm.into()),
