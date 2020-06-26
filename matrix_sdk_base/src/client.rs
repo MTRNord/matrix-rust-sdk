@@ -39,12 +39,15 @@ use crate::identifiers::{RoomId, UserId};
 use crate::models::Room;
 use crate::session::Session;
 use crate::state::{AllRooms, ClientState, StateStore};
+use crate::events::room::message::RelatesTo,
 use crate::EventEmitter;
 
 #[cfg(feature = "encryption")]
 use matrix_sdk_common::locks::Mutex;
 use matrix_sdk_common::locks::RwLock;
 use std::ops::Deref;
+
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "encryption")]
 use crate::api::r0::keys::{
