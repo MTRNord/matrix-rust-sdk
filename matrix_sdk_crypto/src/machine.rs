@@ -1449,6 +1449,13 @@ impl OlmMachine {
             }
         }
     }
+    
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub struct RelatesToHelper {
+        #[serde(rename = "m.relates_to", skip_serializing_if = "Option::is_none")]
+        pub relates_to: Option<RelatesTo>,
+    }
+
 
     /// Decrypt an event from a room timeline.
     ///
@@ -1477,6 +1484,9 @@ impl OlmMachine {
         // TODO check the message index.
         // TODO check if this is from a verified device.
 
+        let relates_to: RelatesToHelper = serde_json::from_str(&plaintext)?;
+        println("{:?}", relates_to);
+        
         let mut decrypted_value = serde_json::from_str::<Value>(&plaintext)?;
         let decrypted_object = decrypted_value
             .as_object_mut()
