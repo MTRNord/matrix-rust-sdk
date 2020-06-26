@@ -18,7 +18,7 @@ use std::convert::TryFrom;
 use crate::events::collections::all::Event;
 use crate::events::presence::{PresenceEvent, PresenceEventContent, PresenceState};
 use crate::events::room::{
-    member::{MemberEvent, MembershipChange, MembershipState},
+    member::{MemberEvent, MembershipChange},
     power_levels::PowerLevelsEvent,
 };
 use crate::identifiers::UserId;
@@ -27,12 +27,11 @@ use crate::js_int::{Int, UInt};
 use serde::{Deserialize, Serialize};
 // Notes: if Alice invites Bob into a room we will get an event with the sender as Alice and the state key as Bob.
 
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(test, derive(Clone))]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 /// A Matrix room member.
 ///
 pub struct RoomMember {
-    /// The unique mxid of the user.
+    /// The unique MXID of the user.
     pub user_id: UserId,
     /// The human readable name of the user.
     pub display_name: Option<String>,
@@ -54,8 +53,6 @@ pub struct RoomMember {
     pub power_level: Option<Int>,
     /// The normalized power level of this `RoomMember` (0-100).
     pub power_level_norm: Option<Int>,
-    /// The `MembershipState` of this `RoomMember`.
-    pub membership: MembershipState,
     /// The human readable name of this room member.
     pub name: String,
     /// The events that created the state of this room member.
@@ -75,7 +72,6 @@ impl PartialEq for RoomMember {
             && self.display_name == other.display_name
             && self.avatar_url == other.avatar_url
             && self.last_active_ago == other.last_active_ago
-            && self.membership == other.membership
     }
 }
 
@@ -94,13 +90,33 @@ impl RoomMember {
             typing: None,
             power_level: None,
             power_level_norm: None,
-            membership: event.content.membership,
             presence_events: Vec::default(),
             events: vec![Event::RoomMember(event.clone())],
         }
     }
 
-    pub fn update_member(&mut self, event: &MemberEvent) -> bool {
+    /// Returns the most ergonomic name available for the member.
+    ///
+    /// This is the member's display name if it is set, otherwise their MXID.
+    pub fn name(&self) -> String {
+        self.display_name
+            .clone()
+            .unwrap_or_else(|| format!("{}", self.user_id))
+    }
+
+    /// Returns a name for the member which is guaranteed to be unique.
+    ///
+    /// This is either of the format "DISPLAY_NAME (MXID)" if the display name is set for the
+    /// member, or simply "MXID" if not.
+    pub fn unique_name(&self) -> String {
+        self.display_name
+            .clone()
+            .map(|d| format!("{} ({})", d, self.user_id))
+            .unwrap_or_else(|| format!("{}", self.user_id))
+    }
+
+    /// Handle profile updates.
+    pub(crate) fn update_profile(&mut self, event: &MemberEvent) -> bool {
         use MembershipChange::*;
 
         match event.membership_change() {
@@ -109,15 +125,9 @@ impl RoomMember {
                 self.avatar_url = event.content.avatar_url.clone();
                 true
             }
-            Banned | Kicked | KickedAndBanned | InvitationRejected | InvitationRevoked | Left
-            | Unbanned | Joined | Invited => {
-                self.membership = event.content.membership;
-                true
-            }
-            NotImplemented => false,
-            None => false,
-            // we ignore the error here as only a buggy or malicious server would send this
-            Error => false,
+
+            // We're only interested in profile changes here.
+            _ => false,
         }
     }
 
@@ -199,10 +209,9 @@ impl RoomMember {
 
 #[cfg(test)]
 mod test {
-    use matrix_sdk_test::{async_test, EventBuilder, EventsFile};
+    use matrix_sdk_test::{async_test, EventBuilder, EventsJson};
 
     use crate::events::collections::all::RoomEvent;
-    use crate::events::room::member::MembershipState;
     use crate::identifiers::{RoomId, UserId};
     use crate::{BaseClient, Session};
 
@@ -235,8 +244,8 @@ mod test {
         let room_id = get_room_id();
 
         let mut response = EventBuilder::default()
-            .add_room_event(EventsFile::Member, RoomEvent::RoomMember)
-            .add_room_event(EventsFile::PowerLevels, RoomEvent::RoomPowerLevels)
+            .add_room_event(EventsJson::Member, RoomEvent::RoomMember)
+            .add_room_event(EventsJson::PowerLevels, RoomEvent::RoomPowerLevels)
             .build_sync_response();
 
         client.receive_sync_response(&mut response).await.unwrap();
@@ -245,10 +254,9 @@ mod test {
         let room = room.read().await;
 
         let member = room
-            .members
+            .joined_members
             .get(&UserId::try_from("@example:localhost").unwrap())
             .unwrap();
-        assert_eq!(member.membership, MembershipState::Join);
         assert_eq!(member.power_level, Int::new(100));
     }
 
@@ -259,9 +267,9 @@ mod test {
         let room_id = get_room_id();
 
         let mut response = EventBuilder::default()
-            .add_room_event(EventsFile::Member, RoomEvent::RoomMember)
-            .add_room_event(EventsFile::PowerLevels, RoomEvent::RoomPowerLevels)
-            .add_presence_event(EventsFile::Presence)
+            .add_room_event(EventsJson::Member, RoomEvent::RoomMember)
+            .add_room_event(EventsJson::PowerLevels, RoomEvent::RoomPowerLevels)
+            .add_presence_event(EventsJson::Presence)
             .build_sync_response();
 
         client.receive_sync_response(&mut response).await.unwrap();
@@ -270,11 +278,10 @@ mod test {
         let room = room.read().await;
 
         let member = room
-            .members
+            .joined_members
             .get(&UserId::try_from("@example:localhost").unwrap())
             .unwrap();
 
-        assert_eq!(member.membership, MembershipState::Join);
         assert_eq!(member.power_level, Int::new(100));
 
         assert!(member.avatar_url.is_none());

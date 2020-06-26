@@ -15,6 +15,7 @@
 use std::sync::Arc;
 
 use matrix_sdk_common::locks::RwLock;
+use serde_json::value::RawValue as RawJsonValue;
 
 use crate::events::{
     fully_read::FullyReadEvent,
@@ -39,11 +40,28 @@ use crate::events::{
         StrippedRoomMember, StrippedRoomName, StrippedRoomPowerLevels,
     },
     typing::TypingEvent,
+    CustomEvent, CustomRoomEvent, CustomStateEvent,
 };
 use crate::{Room, RoomState};
+use matrix_sdk_common_macros::async_trait;
 
 /// Type alias for `RoomState` enum when passed to `EventEmitter` methods.
 pub type SyncRoom = RoomState<Arc<RwLock<Room>>>;
+
+/// This represents the various "unrecognized" events.
+#[derive(Clone, Copy, Debug)]
+pub enum CustomOrRawEvent<'c> {
+    /// When an event can not be deserialized by ruma.
+    ///
+    /// This will be mostly obsolete when ruma-events is updated.
+    RawJson(&'c RawJsonValue),
+    /// A custom event.
+    Custom(&'c CustomEvent),
+    /// A custom room event.
+    CustomRoom(&'c CustomRoomEvent),
+    /// A custom state event.
+    CustomState(&'c CustomStateEvent),
+}
 
 /// This trait allows any type implementing `EventEmitter` to specify event callbacks for each event.
 /// The `Client` calls each method when the corresponding event is received.
@@ -61,10 +79,11 @@ pub type SyncRoom = RoomState<Arc<RwLock<Room>>>;
 /// #     EventEmitter, SyncRoom
 /// # };
 /// # use matrix_sdk_common::locks::RwLock;
+/// # use matrix_sdk_common_macros::async_trait;
 ///
 /// struct EventCallback;
 ///
-/// #[async_trait::async_trait]
+/// #[async_trait]
 /// impl EventEmitter for EventCallback {
 ///     async fn on_room_message(&self, room: SyncRoom, event: &MessageEvent) {
 ///         if let SyncRoom::Joined(room) = room {
@@ -76,7 +95,7 @@ pub type SyncRoom = RoomState<Arc<RwLock<Room>>>;
 ///             {
 ///                 let name = {
 ///                    let room = room.read().await;
-///                    let member = room.members.get(&sender).unwrap();
+///                    let member = room.joined_members.get(&sender).unwrap();
 ///                    member
 ///                        .display_name
 ///                        .as_ref()
@@ -89,7 +108,7 @@ pub type SyncRoom = RoomState<Arc<RwLock<Room>>>;
 ///     }
 /// }
 /// ```
-#[async_trait::async_trait]
+#[async_trait]
 pub trait EventEmitter: Send + Sync {
     // ROOM EVENTS from `IncomingTimeline`
     /// Fires when `Client` receives a `RoomEvent::RoomMember` event.
@@ -153,30 +172,37 @@ pub trait EventEmitter: Send + Sync {
     async fn on_stripped_state_join_rules(&self, _: SyncRoom, _: &StrippedRoomJoinRules) {}
 
     // `NonRoomEvent` (this is a type alias from ruma_events)
-    /// Fires when `Client` receives a `NonRoomEvent::RoomMember` event.
-    async fn on_account_presence(&self, _: SyncRoom, _: &PresenceEvent) {}
+    /// Fires when `Client` receives a `NonRoomEvent::RoomPresence` event.
+    async fn on_non_room_presence(&self, _: SyncRoom, _: &PresenceEvent) {}
     /// Fires when `Client` receives a `NonRoomEvent::RoomName` event.
-    async fn on_account_ignored_users(&self, _: SyncRoom, _: &IgnoredUserListEvent) {}
+    async fn on_non_room_ignored_users(&self, _: SyncRoom, _: &IgnoredUserListEvent) {}
     /// Fires when `Client` receives a `NonRoomEvent::RoomCanonicalAlias` event.
-    async fn on_account_push_rules(&self, _: SyncRoom, _: &PushRulesEvent) {}
+    async fn on_non_room_push_rules(&self, _: SyncRoom, _: &PushRulesEvent) {}
     /// Fires when `Client` receives a `NonRoomEvent::RoomAliases` event.
-    async fn on_account_data_fully_read(&self, _: SyncRoom, _: &FullyReadEvent) {}
+    async fn on_non_room_fully_read(&self, _: SyncRoom, _: &FullyReadEvent) {}
     /// Fires when `Client` receives a `NonRoomEvent::Typing` event.
-    async fn on_account_data_typing(&self, _: SyncRoom, _: &TypingEvent) {}
+    async fn on_non_room_typing(&self, _: SyncRoom, _: &TypingEvent) {}
     /// Fires when `Client` receives a `NonRoomEvent::Receipt` event.
     ///
     /// This is always a read receipt.
-    async fn on_account_data_receipt(&self, _: SyncRoom, _: &ReceiptEvent) {}
+    async fn on_non_room_receipt(&self, _: SyncRoom, _: &ReceiptEvent) {}
 
     // `PresenceEvent` is a struct so there is only the one method
     /// Fires when `Client` receives a `NonRoomEvent::RoomAliases` event.
     async fn on_presence_event(&self, _: SyncRoom, _: &PresenceEvent) {}
+
+    /// Fires when `Client` receives a `Event::Custom` event or if deserialization fails
+    /// because the event was unknown to ruma.
+    ///
+    /// The only guarantee this method can give about the event is that it is valid JSON.
+    async fn on_unrecognized_event(&self, _: SyncRoom, _: &CustomOrRawEvent<'_>) {}
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
     use matrix_sdk_common::locks::Mutex;
+    use matrix_sdk_common_macros::async_trait;
     use matrix_sdk_test::{async_test, sync_response, SyncResponseFile};
     use std::sync::Arc;
 
@@ -186,7 +212,7 @@ mod test {
     #[derive(Clone)]
     pub struct EvEmitterTest(Arc<Mutex<Vec<String>>>);
 
-    #[async_trait::async_trait]
+    #[async_trait]
     impl EventEmitter for EvEmitterTest {
         async fn on_room_member(&self, _: SyncRoom, _: &MemberEvent) {
             self.0.lock().await.push("member".to_string())
@@ -284,20 +310,26 @@ mod test {
             self.0.lock().await.push("stripped state rules".to_string())
         }
 
-        async fn on_account_presence(&self, _: SyncRoom, _: &PresenceEvent) {
+        async fn on_non_room_presence(&self, _: SyncRoom, _: &PresenceEvent) {
             self.0.lock().await.push("account presence".to_string())
         }
-        async fn on_account_ignored_users(&self, _: SyncRoom, _: &IgnoredUserListEvent) {
+        async fn on_non_room_ignored_users(&self, _: SyncRoom, _: &IgnoredUserListEvent) {
             self.0.lock().await.push("account ignore".to_string())
         }
-        async fn on_account_push_rules(&self, _: SyncRoom, _: &PushRulesEvent) {
+        async fn on_non_room_push_rules(&self, _: SyncRoom, _: &PushRulesEvent) {
             self.0.lock().await.push("account push rules".to_string())
         }
-        async fn on_account_data_fully_read(&self, _: SyncRoom, _: &FullyReadEvent) {
+        async fn on_non_room_fully_read(&self, _: SyncRoom, _: &FullyReadEvent) {
             self.0.lock().await.push("account read".to_string())
+        }
+        async fn on_non_room_typing(&self, _: SyncRoom, _: &TypingEvent) {
+            self.0.lock().await.push("typing event".to_string())
         }
         async fn on_presence_event(&self, _: SyncRoom, _: &PresenceEvent) {
             self.0.lock().await.push("presence event".to_string())
+        }
+        async fn on_unrecognized_event(&self, _: SyncRoom, _: &CustomOrRawEvent<'_>) {
+            self.0.lock().await.push("unrecognized event".to_string())
         }
     }
 
@@ -391,6 +423,32 @@ mod test {
                 "state member",
                 "state member",
                 "message"
+            ],
+        )
+    }
+
+    #[async_test]
+    async fn event_emitter_more_events() {
+        let vec = Arc::new(Mutex::new(Vec::new()));
+        let test_vec = Arc::clone(&vec);
+        let emitter = Box::new(EvEmitterTest(vec));
+
+        let client = get_client().await;
+        client.add_event_emitter(emitter).await;
+
+        let mut response = sync_response(SyncResponseFile::All);
+        client.receive_sync_response(&mut response).await.unwrap();
+
+        let v = test_vec.lock().await;
+        assert_eq!(
+            v.as_slice(),
+            [
+                "message",
+                "unrecognized event",
+                "redaction",
+                "unrecognized event",
+                "unrecognized event",
+                "typing event"
             ],
         )
     }

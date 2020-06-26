@@ -27,6 +27,9 @@ use crate::events::push_rules::Ruleset;
 use crate::identifiers::{RoomId, UserId};
 use crate::{Result, Room, RoomState, Session};
 
+#[cfg(not(target_arch = "wasm32"))]
+use matrix_sdk_common_macros::send_sync;
+
 /// `ClientState` holds all the information to restore a `BaseClient`
 /// except the `access_token` as the default store is not secure.
 ///
@@ -85,7 +88,8 @@ pub struct AllRooms {
 
 /// Abstraction around the data store to avoid unnecessary request on client initialization.
 #[async_trait::async_trait]
-pub trait StateStore: Send + Sync {
+#[cfg_attr(not(target_arch = "wasm32"), send_sync)]
+pub trait StateStore {
     /// Loads the state of `BaseClient` through `ClientState` type.
     ///
     /// An `Option::None` should be returned only if the `StateStore` tries to
@@ -140,57 +144,61 @@ mod test {
 
         #[cfg(not(feature = "messages"))]
         assert_eq!(
-            r#"{
-  "!roomid:example.com": {
-    "room_id": "!roomid:example.com",
-    "room_name": {
-      "name": null,
-      "canonical_alias": null,
-      "aliases": [],
-      "heroes": [],
-      "joined_member_count": null,
-      "invited_member_count": null
-    },
-    "own_user_id": "@example:example.com",
-    "creator": null,
-    "members": {},
-    "typing_users": [],
-    "power_levels": null,
-    "encrypted": null,
-    "unread_highlight": null,
-    "unread_notifications": null,
-    "tombstone": null
-  }
-}"#,
-            serde_json::to_string_pretty(&joined_rooms).unwrap()
+            serde_json::json!({
+                "!roomid:example.com": {
+                    "room_id": "!roomid:example.com",
+                    "room_name": {
+                        "name": null,
+                        "canonical_alias": null,
+                        "aliases": [],
+                        "heroes": [],
+                        "joined_member_count": null,
+                        "invited_member_count": null
+                    },
+                    "own_user_id": "@example:example.com",
+                    "creator": null,
+                    "joined_members": {},
+                    "invited_members": {},
+                    "disambiguated_display_names": {},
+                    "typing_users": [],
+                    "power_levels": null,
+                    "encrypted": null,
+                    "unread_highlight": null,
+                    "unread_notifications": null,
+                    "tombstone": null
+                }
+            }),
+            serde_json::to_value(&joined_rooms).unwrap()
         );
 
         #[cfg(feature = "messages")]
         assert_eq!(
-            r#"{
-  "!roomid:example.com": {
-    "room_id": "!roomid:example.com",
-    "room_name": {
-      "name": null,
-      "canonical_alias": null,
-      "aliases": [],
-      "heroes": [],
-      "joined_member_count": null,
-      "invited_member_count": null
-    },
-    "own_user_id": "@example:example.com",
-    "creator": null,
-    "members": {},
-    "messages": [],
-    "typing_users": [],
-    "power_levels": null,
-    "encrypted": null,
-    "unread_highlight": null,
-    "unread_notifications": null,
-    "tombstone": null
-  }
-}"#,
-            serde_json::to_string_pretty(&joined_rooms).unwrap()
+            serde_json::json!({
+                "!roomid:example.com": {
+                    "room_id": "!roomid:example.com",
+                    "disambiguated_display_names": {},
+                    "room_name": {
+                        "name": null,
+                        "canonical_alias": null,
+                        "aliases": [],
+                        "heroes": [],
+                        "joined_member_count": null,
+                        "invited_member_count": null
+                    },
+                    "own_user_id": "@example:example.com",
+                    "creator": null,
+                    "joined_members": {},
+                    "invited_members": {},
+                    "messages": [],
+                    "typing_users": [],
+                    "power_levels": null,
+                    "encrypted": null,
+                    "unread_highlight": null,
+                    "unread_notifications": null,
+                    "tombstone": null
+                }
+            }),
+            serde_json::to_value(&joined_rooms).unwrap()
         );
     }
 

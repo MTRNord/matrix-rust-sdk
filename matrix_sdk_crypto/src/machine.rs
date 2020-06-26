@@ -84,7 +84,7 @@ pub struct OlmMachine {
     outbound_group_sessions: HashMap<RoomId, OutboundGroupSession>,
 }
 
-#[cfg_attr(tarpaulin, skip)]
+// #[cfg_attr(tarpaulin, skip)]
 impl std::fmt::Debug for OlmMachine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OlmMachine")
@@ -215,6 +215,12 @@ impl OlmMachine {
         match &self.uploaded_signed_key_count {
             Some(count) => {
                 let max_keys = self.account.max_one_time_keys().await as u64;
+                // If there are more keys already uploaded than max_key / 2
+                // bail out returning false, this also avoids overflow.
+                if count.load(Ordering::Relaxed) > (max_keys / 2) {
+                    return false;
+                }
+
                 let key_count = (max_keys / 2) - count.load(Ordering::Relaxed);
                 key_count > 0
             }
@@ -546,17 +552,14 @@ impl OlmMachine {
         match &self.uploaded_signed_key_count {
             Some(count) => {
                 let count = count.load(Ordering::Relaxed);
-                let max_keys = self.account.max_one_time_keys().await as u64;
-                let max_on_server = max_keys / 2;
+                let max_keys = self.account.max_one_time_keys().await;
+                let max_on_server = (max_keys as u64) / 2;
 
                 if count >= (max_on_server) {
                     return Err(());
                 }
 
                 let key_count = (max_on_server) - count;
-
-                let max_keys = self.account.max_one_time_keys().await;
-
                 let key_count: usize = key_count.try_into().unwrap_or(max_keys);
 
                 self.account.generate_one_time_keys(key_count).await;
@@ -1055,26 +1058,13 @@ impl OlmMachine {
     /// This also creates a matching inbound group session and saves that one in
     /// the store.
     async fn create_outbound_group_session(&mut self, room_id: &RoomId) -> OlmResult<()> {
-        let session = OutboundGroupSession::new(room_id);
-        let identity_keys = self.account.identity_keys();
+        let (outbound, inbound) = self.account.create_group_session_pair(room_id).await;
 
-        let sender_key = identity_keys.curve25519();
-        let signing_key = identity_keys.ed25519();
-
-        let inbound_session = InboundGroupSession::new(
-            sender_key,
-            signing_key,
-            &room_id,
-            session.session_key().await,
-        )?;
-        let _ = self
-            .store
-            .save_inbound_group_session(inbound_session)
-            .await?;
+        let _ = self.store.save_inbound_group_session(inbound).await?;
 
         let _ = self
             .outbound_group_sessions
-            .insert(room_id.to_owned(), session);
+            .insert(room_id.to_owned(), outbound);
         Ok(())
     }
 
@@ -1584,8 +1574,6 @@ mod test {
     use matrix_sdk_common::js_int::UInt;
     use std::collections::BTreeMap;
     use std::convert::TryFrom;
-    use std::fs::File;
-    use std::io::prelude::*;
     use std::sync::atomic::AtomicU64;
     use std::time::SystemTime;
 
@@ -1608,6 +1596,7 @@ mod test {
         EventJson, EventType, UnsignedData,
     };
     use matrix_sdk_common::identifiers::{DeviceId, EventId, RoomId, UserId};
+    use matrix_sdk_test::test_json;
 
     fn alice_id() -> UserId {
         UserId::try_from("@alice:example.org").unwrap()
@@ -1621,23 +1610,20 @@ mod test {
         UserId::try_from(USER_ID).unwrap()
     }
 
-    fn response_from_file(path: &str) -> Response<Vec<u8>> {
-        let mut file = File::open(path)
-            .unwrap_or_else(|_| panic!(format!("No such data file found {}", path)));
-        let mut contents = Vec::new();
-        file.read_to_end(&mut contents)
-            .unwrap_or_else(|_| panic!(format!("Can't read data file {}", path)));
-
-        Response::builder().status(200).body(contents).unwrap()
+    fn response_from_file(json: &serde_json::Value) -> Response<Vec<u8>> {
+        Response::builder()
+            .status(200)
+            .body(json.to_string().as_bytes().to_vec())
+            .unwrap()
     }
 
     fn keys_upload_response() -> keys::upload_keys::Response {
-        let data = response_from_file("../test_data/keys_upload.json");
+        let data = response_from_file(&test_json::KEYS_UPLOAD);
         keys::upload_keys::Response::try_from(data).expect("Can't parse the keys upload response")
     }
 
     fn keys_query_response() -> keys::get_keys::Response {
-        let data = response_from_file("../test_data/keys_query.json");
+        let data = response_from_file(&test_json::KEYS_QUERY);
         keys::get_keys::Response::try_from(data).expect("Can't parse the keys upload response")
     }
 

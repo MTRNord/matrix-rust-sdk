@@ -6,10 +6,11 @@ use matrix_sdk::{
     events::room::message::{MessageEvent, MessageEventContent, TextMessageEventContent},
     Client, ClientConfig, EventEmitter, SyncRoom, SyncSettings,
 };
+use matrix_sdk_common_macros::async_trait;
 
 struct EventCallback;
 
-#[async_trait::async_trait]
+#[async_trait]
 impl EventEmitter for EventCallback {
     async fn on_room_message(&self, room: SyncRoom, event: &MessageEvent) {
         if let SyncRoom::Joined(room) = room {
@@ -23,12 +24,8 @@ impl EventEmitter for EventCallback {
                     // any reads should be held for the shortest time possible to
                     // avoid dead locks
                     let room = room.read().await;
-                    let member = room.members.get(&sender).unwrap();
-                    member
-                        .display_name
-                        .as_ref()
-                        .map(ToString::to_string)
-                        .unwrap_or(sender.to_string())
+                    let member = room.joined_members.get(&sender).unwrap();
+                    member.name()
                 };
                 println!("{}: {}", name, msg_body);
             }

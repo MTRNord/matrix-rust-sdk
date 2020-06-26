@@ -28,6 +28,7 @@ use crate::error::Result;
 use crate::events::collections::all::{RoomEvent, StateEvent};
 use crate::events::presence::PresenceEvent;
 // `NonRoomEvent` is what it is aliased as
+use crate::event_emitter::CustomOrRawEvent;
 use crate::events::collections::only::Event as NonRoomEvent;
 use crate::events::ignored_user_list::IgnoredUserListEvent;
 use crate::events::push_rules::{PushRulesEvent, Ruleset};
@@ -81,8 +82,15 @@ pub struct AdditionalUnsignedData {
     pub prev_content: Option<EventJson<MemberEventContent>>,
 }
 
-/// If a `prev_content` field is found inside of `unsigned` we move it up to the events `prev_content` field.
-fn deserialize_prev_content(event: &EventJson<RoomEvent>) -> Option<EventJson<RoomEvent>> {
+/// Transform room event by hoisting `prev_content` field from `unsigned` to the top level.
+///
+/// Due to a [bug in synapse][synapse-bug], `prev_content` often ends up in `unsigned` contrary to
+/// the C2S spec. Some more discussion can be found [here][discussion]. Until this is fixed in
+/// synapse or handled in Ruma, we use this to hoist up `prev_content` to the top level.
+///
+/// [synapse-bug]: <https://github.com/matrix-org/matrix-doc/issues/684#issuecomment-641182668>
+/// [discussion]: <https://github.com/matrix-org/matrix-doc/issues/684#issuecomment-641182668>
+fn hoist_room_event_prev_content(event: &mut EventJson<RoomEvent>) -> Option<EventJson<RoomEvent>> {
     let prev_content = serde_json::from_str::<AdditionalEventData>(event.json().get())
         .map(|more_unsigned| more_unsigned.unsigned)
         .map(|additional| additional.prev_content)
@@ -92,7 +100,33 @@ fn deserialize_prev_content(event: &EventJson<RoomEvent>) -> Option<EventJson<Ro
     let mut ev = event.deserialize().ok()?;
     match &mut ev {
         RoomEvent::RoomMember(ref mut member) if member.prev_content.is_none() => {
-            member.prev_content = prev_content.deserialize().ok();
+            if let Ok(prev) = prev_content.deserialize() {
+                member.prev_content = Some(prev)
+            }
+
+            Some(EventJson::from(ev))
+        }
+        _ => None,
+    }
+}
+
+/// Transform state event by hoisting `prev_content` field from `unsigned` to the top level.
+///
+/// See comment of `hoist_room_event_prev_content`.
+fn hoist_state_event_prev_content(event: &EventJson<StateEvent>) -> Option<EventJson<StateEvent>> {
+    let prev_content = serde_json::from_str::<AdditionalEventData>(event.json().get())
+        .map(|more_unsigned| more_unsigned.unsigned)
+        .map(|additional| additional.prev_content)
+        .ok()
+        .flatten()?;
+
+    let mut ev = event.deserialize().ok()?;
+    match &mut ev {
+        StateEvent::RoomMember(ref mut member) if member.prev_content.is_none() => {
+            if let Ok(prev) = prev_content.deserialize() {
+                member.prev_content = Some(prev)
+            }
+
             Some(EventJson::from(ev))
         }
         _ => None,
@@ -171,7 +205,7 @@ pub struct BaseClient {
     store_passphrase: Arc<Zeroizing<String>>,
 }
 
-#[cfg_attr(tarpaulin, skip)]
+// #[cfg_attr(tarpaulin, skip)]
 impl fmt::Debug for BaseClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Client")
@@ -205,7 +239,7 @@ pub struct BaseClientConfig {
     passphrase: Option<Zeroizing<String>>,
 }
 
-#[cfg_attr(tarpaulin, skip)]
+// #[cfg_attr(tarpaulin, skip)]
 impl std::fmt::Debug for BaseClientConfig {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> StdResult<(), std::fmt::Error> {
         fmt.debug_struct("BaseClientConfig").finish()
@@ -674,13 +708,6 @@ impl BaseClient {
         room_id: &RoomId,
         event: &mut EventJson<RoomEvent>,
     ) -> Result<(Option<EventJson<RoomEvent>>, bool)> {
-        // if the event is a m.room.member event the server will sometimes
-        // send the `prev_content` field as part of the unsigned field this extracts and
-        // places it where everything else expects it.
-        if let Some(e) = deserialize_prev_content(event) {
-            *event = e;
-        }
-
         match event.deserialize() {
             #[allow(unused_mut)]
             Ok(mut e) => {
@@ -940,7 +967,13 @@ impl BaseClient {
         let mut updated = false;
         for (room_id, joined_room) in &mut response.rooms.join {
             let matrix_room = {
-                for event in &joined_room.state.events {
+                for event in &mut joined_room.state.events {
+                    // XXX: Related to `prev_content` and `unsigned`; see the doc comment of
+                    // `hoist_room_event_prev_content`
+                    if let Some(e) = hoist_state_event_prev_content(event) {
+                        *event = e;
+                    }
+
                     if let Ok(e) = event.deserialize() {
                         if self.receive_joined_state_event(&room_id, &e).await? {
                             updated = true;
@@ -962,18 +995,19 @@ impl BaseClient {
 
                     // If the room is encrypted, update the tracked users.
                     if room.is_encrypted() {
-                        o.update_tracked_users(room.members.keys()).await;
+                        o.update_tracked_users(room.joined_members.keys()).await;
+                        o.update_tracked_users(room.invited_members.keys()).await;
                     }
                 }
             }
 
-            // RoomSummary contains information for calculating room name
+            // RoomSummary contains information for calculating room name.
             matrix_room
                 .write()
                 .await
                 .set_room_summary(&joined_room.summary);
 
-            // set unread notification count
+            // Set unread notification count.
             matrix_room
                 .write()
                 .await
@@ -994,12 +1028,17 @@ impl BaseClient {
                     *event = e;
                 }
 
-                if let Some(e) = deserialize_prev_content(&event) {
+                // XXX: Related to `prev_content` and `unsigned`; see the doc comment of
+                // `hoist_room_event_prev_content`
+                if let Some(e) = hoist_room_event_prev_content(event) {
                     *event = e;
                 }
 
                 if let Ok(e) = event.deserialize() {
                     self.emit_timeline_event(&room_id, &e, RoomStateType::Joined)
+                        .await;
+                } else {
+                    self.emit_unrecognized_event(&room_id, &event, RoomStateType::Joined)
                         .await;
                 }
             }
@@ -1066,7 +1105,13 @@ impl BaseClient {
         let mut updated = false;
         for (room_id, left_room) in &mut response.rooms.leave {
             let matrix_room = {
-                for event in &left_room.state.events {
+                for event in &mut left_room.state.events {
+                    // XXX: Related to `prev_content` and `unsigned`; see the doc comment of
+                    // `hoist_room_event_prev_content`
+                    if let Some(e) = hoist_state_event_prev_content(event) {
+                        *event = e;
+                    }
+
                     if let Ok(e) = event.deserialize() {
                         if self.receive_left_state_event(&room_id, &e).await? {
                             updated = true;
@@ -1085,7 +1130,9 @@ impl BaseClient {
             }
 
             for event in &mut left_room.timeline.events {
-                if let Some(e) = deserialize_prev_content(&event) {
+                // XXX: Related to `prev_content` and `unsigned`; see the doc comment of
+                // `hoist_room_event_prev_content`
+                if let Some(e) = hoist_room_event_prev_content(event) {
                     *event = e;
                 }
 
@@ -1237,8 +1284,13 @@ impl BaseClient {
         match &mut *olm {
             Some(o) => {
                 let room = room.write().await;
-                let members = room.members.keys();
-                Ok(o.share_group_session(room_id, members).await?)
+
+                // XXX: We construct members in a slightly roundabout way instead of chaining the
+                // iterators directly because of https://github.com/rust-lang/rust/issues/64552
+                let joined_members = room.joined_members.keys();
+                let invited_members = room.joined_members.keys();
+                let members: Vec<&UserId> = joined_members.chain(invited_members).collect();
+                Ok(o.share_group_session(room_id, members.into_iter()).await?)
             }
             None => panic!("Olm machine wasn't started"),
         }
@@ -1424,6 +1476,11 @@ impl BaseClient {
                 event_emitter.on_room_power_levels(room, &power).await
             }
             RoomEvent::RoomTombstone(tomb) => event_emitter.on_room_tombstone(room, &tomb).await,
+            RoomEvent::CustomRoom(custom) => {
+                event_emitter
+                    .on_unrecognized_event(room, &CustomOrRawEvent::CustomRoom(custom))
+                    .await
+            }
             _ => {}
         }
     }
@@ -1484,6 +1541,11 @@ impl BaseClient {
                 event_emitter.on_state_join_rules(room, &rules).await
             }
             StateEvent::RoomTombstone(tomb) => event_emitter.on_room_tombstone(room, &tomb).await,
+            StateEvent::CustomState(custom) => {
+                event_emitter
+                    .on_unrecognized_event(room, &CustomOrRawEvent::CustomState(custom))
+                    .await
+            }
             _ => {}
         }
     }
@@ -1601,19 +1663,20 @@ impl BaseClient {
 
         match event {
             NonRoomEvent::Presence(presence) => {
-                event_emitter.on_account_presence(room, &presence).await
+                event_emitter.on_non_room_presence(room, &presence).await
             }
             NonRoomEvent::IgnoredUserList(ignored) => {
-                event_emitter.on_account_ignored_users(room, &ignored).await
-            }
-            NonRoomEvent::PushRules(rules) => {
-                event_emitter.on_account_push_rules(room, &rules).await
-            }
-            NonRoomEvent::FullyRead(full_read) => {
                 event_emitter
-                    .on_account_data_fully_read(room, &full_read)
+                    .on_non_room_ignored_users(room, &ignored)
                     .await
             }
+            NonRoomEvent::PushRules(rules) => {
+                event_emitter.on_non_room_push_rules(room, &rules).await
+            }
+            NonRoomEvent::FullyRead(full_read) => {
+                event_emitter.on_non_room_fully_read(room, &full_read).await
+            }
+            NonRoomEvent::Typing(typing) => event_emitter.on_non_room_typing(room, &typing).await,
             _ => {}
         }
     }
@@ -1657,19 +1720,20 @@ impl BaseClient {
 
         match event {
             NonRoomEvent::Presence(presence) => {
-                event_emitter.on_account_presence(room, &presence).await
+                event_emitter.on_non_room_presence(room, &presence).await
             }
             NonRoomEvent::IgnoredUserList(ignored) => {
-                event_emitter.on_account_ignored_users(room, &ignored).await
-            }
-            NonRoomEvent::PushRules(rules) => {
-                event_emitter.on_account_push_rules(room, &rules).await
-            }
-            NonRoomEvent::FullyRead(full_read) => {
                 event_emitter
-                    .on_account_data_fully_read(room, &full_read)
+                    .on_non_room_ignored_users(room, &ignored)
                     .await
             }
+            NonRoomEvent::PushRules(rules) => {
+                event_emitter.on_non_room_push_rules(room, &rules).await
+            }
+            NonRoomEvent::FullyRead(full_read) => {
+                event_emitter.on_non_room_fully_read(room, &full_read).await
+            }
+            NonRoomEvent::Typing(typing) => event_emitter.on_non_room_typing(room, &typing).await,
             _ => {}
         }
     }
@@ -1707,6 +1771,41 @@ impl BaseClient {
             ee.on_presence_event(room, &event).await;
         }
     }
+
+    pub(crate) async fn emit_unrecognized_event<T>(
+        &self,
+        room_id: &RoomId,
+        event: &EventJson<T>,
+        room_state: RoomStateType,
+    ) {
+        let room = match room_state {
+            RoomStateType::Invited => {
+                if let Some(room) = self.get_invited_room(&room_id).await {
+                    RoomState::Invited(Arc::clone(&room))
+                } else {
+                    return;
+                }
+            }
+            RoomStateType::Joined => {
+                if let Some(room) = self.get_joined_room(&room_id).await {
+                    RoomState::Joined(Arc::clone(&room))
+                } else {
+                    return;
+                }
+            }
+            RoomStateType::Left => {
+                if let Some(room) = self.get_left_room(&room_id).await {
+                    RoomState::Left(Arc::clone(&room))
+                } else {
+                    return;
+                }
+            }
+        };
+        if let Some(ee) = &self.event_emitter.read().await.as_ref() {
+            ee.on_unrecognized_event(room, &CustomOrRawEvent::RawJson(event.json()))
+                .await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1716,7 +1815,8 @@ mod test {
         events::{collections::all::RoomEvent, stripped::AnyStrippedStateEvent},
         BaseClient, Session,
     };
-    use matrix_sdk_test::{async_test, EventBuilder, EventsFile};
+    use matrix_sdk_common_macros::async_trait;
+    use matrix_sdk_test::{async_test, test_json, EventBuilder, EventsJson};
     use serde_json::json;
     use std::convert::TryFrom;
 
@@ -1756,7 +1856,7 @@ mod test {
     #[async_test]
     async fn test_joined_room_creation() {
         let mut sync_response = EventBuilder::default()
-            .add_room_event(EventsFile::Member, RoomEvent::RoomMember)
+            .add_room_event(EventsJson::Member, RoomEvent::RoomMember)
             .build_sync_response();
         let client = get_client().await;
         let room_id = get_room_id();
@@ -1882,7 +1982,7 @@ mod test {
         };
 
         struct EE(Arc<AtomicBool>);
-        #[async_trait::async_trait]
+        #[async_trait]
         impl EventEmitter for EE {
             async fn on_room_member(&self, room: SyncRoom, event: &MemberEvent) {
                 if let SyncRoom::Joined(_) = room {
@@ -1907,10 +2007,193 @@ mod test {
         client.event_emitter = Arc::new(RwLock::new(Some(Box::new(emitter))));
 
         // This is needed other wise the `EventBuilder` goes through a de/ser cycle and the `prev_content` is lost.
-        let event = serde_json::from_str::<serde_json::Value>(include_str!(
-            "../../test_data/events/member.json"
-        ))
-        .unwrap();
+        let event: &serde_json::Value = &test_json::MEMBER;
+
+        let mut joined_rooms: HashMap<RoomId, serde_json::Value> = HashMap::new();
+        let joined_room = serde_json::json!({
+            "summary": {},
+            "account_data": {
+                "events": [],
+            },
+            "ephemeral": {
+                "events": [],
+            },
+            "state": {
+                "events": [],
+            },
+            "timeline": {
+                "events": vec![ event ],
+                "limited": true,
+                "prev_batch": "t392-516_47314_0_7_1_1_1_11444_1"
+            },
+            "unread_notifications": {
+                "highlight_count": 0,
+                "notification_count": 11
+            }
+        });
+        joined_rooms.insert(room_id, joined_room);
+
+        let empty_room: HashMap<RoomId, serde_json::Value> = HashMap::new();
+        let body = serde_json::json!({
+            "device_one_time_keys_count": {},
+            "next_batch": "s526_47314_0_7_1_1_1_11444_1",
+            "device_lists": {
+                "changed": [],
+                "left": []
+            },
+            "rooms": {
+                "invite": empty_room,
+                "join": joined_rooms,
+                "leave": empty_room,
+            },
+            "to_device": {
+                "events": []
+            },
+            "presence": {
+                "events": []
+            }
+        });
+        let response = http::Response::builder()
+            .body(serde_json::to_vec(&body).unwrap())
+            .unwrap();
+        let mut sync =
+            matrix_sdk_common::api::r0::sync::sync_events::Response::try_from(response).unwrap();
+
+        client.receive_sync_response(&mut sync).await.unwrap();
+
+        assert!(passed.load(Ordering::SeqCst))
+    }
+
+    #[async_test]
+    async fn test_unrecognized_events() {
+        use super::*;
+
+        use crate::{EventEmitter, SyncRoom};
+        use matrix_sdk_common::locks::RwLock;
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        struct EE(Arc<AtomicBool>);
+        #[async_trait]
+        impl EventEmitter for EE {
+            async fn on_unrecognized_event(&self, room: SyncRoom, event: &CustomOrRawEvent<'_>) {
+                if let SyncRoom::Joined(_) = room {
+                    if let CustomOrRawEvent::RawJson(raw) = event {
+                        let val = serde_json::to_value(raw).unwrap();
+                        if val.get("type").unwrap() == &json! { "m.room.message" }
+                            && val.get("content").unwrap().get("m.relates_to").is_some()
+                        {
+                            self.0.swap(true, Ordering::SeqCst);
+                        }
+                    }
+                }
+            }
+        }
+
+        let room_id = get_room_id();
+        let passed = Arc::new(AtomicBool::default());
+        let emitter = EE(Arc::clone(&passed));
+        let mut client = get_client().await;
+
+        client.event_emitter = Arc::new(RwLock::new(Some(Box::new(emitter))));
+
+        // This is needed other wise the `EventBuilder` goes through a de/ser cycle and the `prev_content` is lost.
+        let event: &serde_json::Value = &test_json::MESSAGE_EDIT;
+
+        let mut joined_rooms: HashMap<RoomId, serde_json::Value> = HashMap::new();
+        let joined_room = serde_json::json!({
+            "summary": {},
+            "account_data": {
+                "events": [],
+            },
+            "ephemeral": {
+                "events": [],
+            },
+            "state": {
+                "events": [],
+            },
+            "timeline": {
+                "events": vec![ event ],
+                "limited": true,
+                "prev_batch": "t392-516_47314_0_7_1_1_1_11444_1"
+            },
+            "unread_notifications": {
+                "highlight_count": 0,
+                "notification_count": 11
+            }
+        });
+        joined_rooms.insert(room_id, joined_room);
+
+        let empty_room: HashMap<RoomId, serde_json::Value> = HashMap::new();
+        let body = serde_json::json!({
+            "device_one_time_keys_count": {},
+            "next_batch": "s526_47314_0_7_1_1_1_11444_1",
+            "device_lists": {
+                "changed": [],
+                "left": []
+            },
+            "rooms": {
+                "invite": empty_room,
+                "join": joined_rooms,
+                "leave": empty_room,
+            },
+            "to_device": {
+                "events": []
+            },
+            "presence": {
+                "events": []
+            }
+        });
+        let response = http::Response::builder()
+            .body(serde_json::to_vec(&body).unwrap())
+            .unwrap();
+        let mut sync =
+            matrix_sdk_common::api::r0::sync::sync_events::Response::try_from(response).unwrap();
+
+        client.receive_sync_response(&mut sync).await.unwrap();
+
+        assert!(passed.load(Ordering::SeqCst))
+    }
+
+    #[async_test]
+    async fn test_unrecognized_custom_event() {
+        use super::*;
+
+        use crate::{EventEmitter, SyncRoom};
+        use matrix_sdk_common::locks::RwLock;
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        struct EE(Arc<AtomicBool>);
+        #[async_trait]
+        impl EventEmitter for EE {
+            async fn on_unrecognized_event(&self, room: SyncRoom, event: &CustomOrRawEvent<'_>) {
+                if let SyncRoom::Joined(_) = room {
+                    if let CustomOrRawEvent::CustomRoom(custom) = event {
+                        if custom.event_type == "m.reaction"
+                            && custom.content.get("m.relates_to").is_some()
+                        {
+                            self.0.swap(true, Ordering::SeqCst);
+                        }
+                    }
+                }
+            }
+        }
+
+        let room_id = get_room_id();
+        let passed = Arc::new(AtomicBool::default());
+        let emitter = EE(Arc::clone(&passed));
+        let mut client = get_client().await;
+
+        client.event_emitter = Arc::new(RwLock::new(Some(Box::new(emitter))));
+
+        // This is needed other wise the `EventBuilder` goes through a de/ser cycle and the `prev_content` is lost.
+        let event: &serde_json::Value = &test_json::REACTION;
+
         let mut joined_rooms: HashMap<RoomId, serde_json::Value> = HashMap::new();
         let joined_room = serde_json::json!({
             "summary": {},
@@ -1973,7 +2256,7 @@ mod test {
         let room_id = get_room_id();
 
         let mut sync_response = EventBuilder::default()
-            .add_room_event(EventsFile::Member, RoomEvent::RoomMember)
+            .add_room_event(EventsJson::Member, RoomEvent::RoomMember)
             .build_sync_response();
 
         client

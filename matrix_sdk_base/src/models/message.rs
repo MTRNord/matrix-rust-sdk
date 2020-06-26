@@ -146,6 +146,8 @@ mod test {
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::*;
 
+    use matrix_sdk_test::test_json;
+
     use crate::events::{collections::all::RoomEvent, EventJson};
     use crate::identifiers::{RoomId, UserId};
     use crate::Room;
@@ -157,8 +159,8 @@ mod test {
 
         let mut room = Room::new(&id, &user);
 
-        let json = std::fs::read_to_string("../test_data/events/message_text.json").unwrap();
-        let event = serde_json::from_str::<EventJson<RoomEvent>>(&json).unwrap();
+        let json: &serde_json::Value = &test_json::MESSAGE_TEXT;
+        let event = serde_json::from_value::<EventJson<RoomEvent>>(json.clone()).unwrap();
 
         let mut msgs = MessageQueue::new();
         let message = if let RoomEvent::RoomMessage(msg) = event.deserialize().unwrap() {
@@ -176,6 +178,7 @@ mod test {
             serde_json::json!({
                 "!roomid:example.com": {
                     "room_id": "!roomid:example.com",
+                    "disambiguated_display_names": {},
                     "room_name": {
                         "name": null,
                         "canonical_alias": null,
@@ -186,7 +189,8 @@ mod test {
                     },
                     "own_user_id": "@example:example.com",
                     "creator": null,
-                    "members": {},
+                    "joined_members": {},
+                    "invited_members": {},
                     "messages": [ message ],
                     "typing_users": [],
                     "power_levels": null,
@@ -207,8 +211,8 @@ mod test {
 
         let mut room = Room::new(&id, &user);
 
-        let json = std::fs::read_to_string("../test_data/events/message_text.json").unwrap();
-        let event = serde_json::from_str::<EventJson<RoomEvent>>(&json).unwrap();
+        let json: &serde_json::Value = &test_json::MESSAGE_TEXT;
+        let event = serde_json::from_value::<EventJson<RoomEvent>>(json.clone()).unwrap();
 
         let mut msgs = MessageQueue::new();
         let message = if let RoomEvent::RoomMessage(msg) = event.deserialize().unwrap() {
@@ -225,6 +229,7 @@ mod test {
         let json = serde_json::json!({
             "!roomid:example.com": {
                 "room_id": "!roomid:example.com",
+                "disambiguated_display_names": {},
                 "room_name": {
                     "name": null,
                     "canonical_alias": null,
@@ -235,7 +240,8 @@ mod test {
                 },
                 "own_user_id": "@example:example.com",
                 "creator": null,
-                "members": {},
+                "joined_members": {},
+                "invited_members": {},
                 "messages": [ message ],
                 "typing_users": [],
                 "power_levels": null,

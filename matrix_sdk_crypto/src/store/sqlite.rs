@@ -15,7 +15,6 @@
 use matrix_sdk_common::instant::{Duration, Instant};
 use std::collections::{BTreeMap, HashSet};
 use std::convert::TryFrom;
-use std::mem;
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::sync::Arc;
@@ -597,11 +596,11 @@ impl CryptoStore for SqliteStore {
             .for_each(drop);
 
         let devices = self.load_devices().await?;
-        mem::replace(&mut self.devices, devices);
+        self.devices = devices;
 
         let (tracked_users, users_for_query) = self.load_tracked_users().await?;
-        mem::replace(&mut self.tracked_users, tracked_users);
-        mem::replace(&mut self.users_for_key_query, users_for_query);
+        self.tracked_users = tracked_users;
+        self.users_for_key_query = users_for_query;
 
         Ok(result)
     }
@@ -773,7 +772,7 @@ impl CryptoStore for SqliteStore {
     }
 }
 
-#[cfg_attr(tarpaulin, skip)]
+// #[cfg_attr(tarpaulin, skip)]
 impl std::fmt::Debug for SqliteStore {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> StdResult<(), std::fmt::Error> {
         fmt.debug_struct("SqliteStore")

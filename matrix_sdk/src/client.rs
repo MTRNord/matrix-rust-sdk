@@ -17,11 +17,13 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
+use std::fmt::{self, Debug};
 use std::path::Path;
 use std::result::Result as StdResult;
 use std::sync::Arc;
 
 use matrix_sdk_common::instant::{Duration, Instant};
+use matrix_sdk_common::js_int::UInt;
 use matrix_sdk_common::locks::RwLock;
 use matrix_sdk_common::uuid::Uuid;
 
@@ -65,9 +67,9 @@ pub struct Client {
     pub(crate) base_client: BaseClient,
 }
 
-#[cfg_attr(tarpaulin, skip)]
-impl std::fmt::Debug for Client {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> StdResult<(), std::fmt::Error> {
+// #[cfg_attr(tarpaulin, skip)]
+impl Debug for Client {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> StdResult<(), fmt::Error> {
         write!(fmt, "Client {{ homeserver: {} }}", self.homeserver)
     }
 }
@@ -105,9 +107,9 @@ pub struct ClientConfig {
     base_config: BaseClientConfig,
 }
 
-#[cfg_attr(tarpaulin, skip)]
-impl std::fmt::Debug for ClientConfig {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> StdResult<(), std::fmt::Error> {
+// #[cfg_attr(tarpaulin, skip)]
+impl Debug for ClientConfig {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut res = fmt.debug_struct("ClientConfig");
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -246,6 +248,9 @@ impl SyncSettings {
     }
 }
 
+use api::r0::account::register;
+use api::r0::directory::get_public_rooms;
+use api::r0::directory::get_public_rooms_filtered;
 #[cfg(feature = "encryption")]
 use api::r0::keys::{claim_keys, get_keys, upload_keys, KeyAlgorithm};
 use api::r0::membership::{
@@ -263,6 +268,7 @@ use api::r0::sync::sync_events;
 #[cfg(feature = "encryption")]
 use api::r0::to_device::send_event_to_device;
 use api::r0::typing::create_typing_event;
+use api::r0::uiaa::UiaaResponse;
 
 impl Client {
     /// Creates a new client for making HTTP requests to the given homeserver.
@@ -348,22 +354,16 @@ impl Client {
     }
 
     /// Returns the joined rooms this client knows about.
-    ///
-    /// A `HashMap` of room id to `matrix::models::Room`
     pub fn joined_rooms(&self) -> Arc<RwLock<HashMap<RoomId, Arc<RwLock<Room>>>>> {
         self.base_client.joined_rooms()
     }
 
     /// Returns the invited rooms this client knows about.
-    ///
-    /// A `HashMap` of room id to `matrix::models::Room`
     pub fn invited_rooms(&self) -> Arc<RwLock<HashMap<RoomId, Arc<RwLock<Room>>>>> {
         self.base_client.invited_rooms()
     }
 
     /// Returns the left rooms this client knows about.
-    ///
-    /// A `HashMap` of room id to `matrix::models::Room`
     pub fn left_rooms(&self) -> Arc<RwLock<HashMap<RoomId, Arc<RwLock<Room>>>>> {
         self.base_client.left_rooms()
     }
@@ -419,7 +419,7 @@ impl Client {
     ///     device_id from a previous login call. Note that this should be done
     ///     only if the client also holds the encryption keys for this device.
     #[instrument(skip(password))]
-    pub async fn login<S: Into<String> + std::fmt::Debug>(
+    pub async fn login<S: Into<String> + Debug>(
         &self,
         user: S,
         password: S,
@@ -447,10 +447,46 @@ impl Client {
     ///
     /// # Arguments
     ///
-    /// * `session` - An session that the user already has from a
+    /// * `session` - A session that the user already has from a
     /// previous login call.
     pub async fn restore_login(&self, session: Session) -> Result<()> {
         Ok(self.base_client.restore_login(session).await?)
+    }
+
+    /// Register a user to the server.
+    ///
+    /// # Arguments
+    ///
+    /// * `registration` - The easiest way to create this request is using the `RegistrationBuilder`.
+    ///
+    ///
+    /// # Examples
+    /// ```
+    /// # use std::convert::TryFrom;
+    /// # use matrix_sdk::{Client, RegistrationBuilder};
+    /// # use matrix_sdk::api::r0::account::register::RegistrationKind;
+    /// # use matrix_sdk::identifiers::DeviceId;
+    /// # use url::Url;
+    /// # let homeserver = Url::parse("http://example.com").unwrap();
+    /// # let mut rt = tokio::runtime::Runtime::new().unwrap();
+    /// # rt.block_on(async {
+    /// let mut builder = RegistrationBuilder::default();
+    /// builder.password("pass")
+    ///     .username("user")
+    ///     .kind(RegistrationKind::User);
+    /// let mut client = Client::new(homeserver).unwrap();
+    /// client.register_user(builder).await;
+    /// # })
+    /// ```
+    #[instrument(skip(registration))]
+    pub async fn register_user<R: Into<register::Request>>(
+        &self,
+        registration: R,
+    ) -> Result<register::Response> {
+        info!("Registering to {}", self.homeserver);
+
+        let request = registration.into();
+        self.send_uiaa(request).await
     }
 
     /// Join a room by `RoomId`.
@@ -477,7 +513,7 @@ impl Client {
     /// # Arguments
     ///
     /// * `alias` - The `RoomId` or `RoomAliasId` of the room to be joined.
-    /// An alias looks like this `#name:example.com`
+    /// An alias looks like `#name:example.com`.
     pub async fn join_room_by_id_or_alias(
         &self,
         alias: &RoomIdOrAliasId,
@@ -613,6 +649,92 @@ impl Client {
         self.send(request).await
     }
 
+    /// Search the homeserver's directory of public rooms.
+    ///
+    /// Sends a request to "_matrix/client/r0/publicRooms", returns
+    /// a `get_public_rooms::Response`.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - The number of `PublicRoomsChunk`s in each response.
+    ///
+    /// * `since` - Pagination token from a previous request.
+    ///
+    /// * `server` - The name of the server, if `None` the requested server is used.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use matrix_sdk::Client;
+    /// # use url::Url;
+    /// # let homeserver = Url::parse("http://example.com").unwrap();
+    /// # let limit = Some(10);
+    /// # let since = Some("since token");
+    /// # let server = Some("server name");
+    ///
+    /// let mut cli = Client::new(homeserver).unwrap();
+    /// # use futures::executor::block_on;
+    /// # block_on(async {
+    ///
+    /// cli.public_rooms(limit, since, server).await;
+    /// # });
+    /// ```
+    pub async fn public_rooms(
+        &self,
+        limit: Option<u32>,
+        since: Option<&str>,
+        server: Option<&str>,
+    ) -> Result<get_public_rooms::Response> {
+        let limit = limit.map(|n| UInt::try_from(n).ok()).flatten();
+        let since = since.map(ToString::to_string);
+        let server = server.map(ToString::to_string);
+
+        let request = get_public_rooms::Request {
+            limit,
+            since,
+            server,
+        };
+        self.send(request).await
+    }
+
+    /// Search the homeserver's directory of public rooms with a filter.
+    ///
+    /// Sends a request to "_matrix/client/r0/publicRooms", returns
+    /// a `get_public_rooms_filtered::Response`.
+    ///
+    /// # Arguments
+    ///
+    /// * `room_search` - The easiest way to create this request is using the `RoomListFilterBuilder`.
+    ///
+    /// # Examples
+    /// ```
+    /// # use std::convert::TryFrom;
+    /// # use matrix_sdk::{Client, RoomListFilterBuilder};
+    /// # use matrix_sdk::api::r0::directory::get_public_rooms_filtered::{self, RoomNetwork, Filter};
+    /// # use url::Url;
+    /// # let homeserver = Url::parse("http://example.com").unwrap();
+    /// # let mut rt = tokio::runtime::Runtime::new().unwrap();
+    /// # rt.block_on(async {
+    /// # let last_sync_token = "".to_string();
+    /// let mut client = Client::new(homeserver).unwrap();
+    ///
+    /// let generic_search_term = Some("matrix-rust-sdk".to_string());
+    /// let mut builder = RoomListFilterBuilder::new();
+    /// builder
+    ///     .filter(Filter { generic_search_term, })
+    ///     .since(last_sync_token)
+    ///     .room_network(RoomNetwork::Matrix);
+    ///
+    /// client.public_rooms_filtered(builder).await;
+    /// # })
+    /// ```
+    pub async fn public_rooms_filtered<R: Into<get_public_rooms_filtered::Request>>(
+        &self,
+        room_search: R,
+    ) -> Result<get_public_rooms_filtered::Response> {
+        let request = room_search.into();
+        self.send(request).await
+    }
+
     /// Create a room using the `RoomBuilder` and send the request.
     ///
     /// Sends a request to `/_matrix/client/r0/createRoom`, returns a `create_room::Response`,
@@ -659,7 +781,7 @@ impl Client {
     ///
     /// # Arguments
     ///
-    /// * `request` - The easiest way to create a `Request` is using the
+    /// * `request` - The easiest way to create this request is using the
     /// `MessagesRequestBuilder`.
     ///
     /// # Examples
@@ -673,12 +795,14 @@ impl Client {
     /// # use matrix_sdk::js_int::UInt;
     ///
     /// # let homeserver = Url::parse("http://example.com").unwrap();
-    /// let mut builder = MessagesRequestBuilder::new();
-    /// builder.room_id(RoomId::try_from("!roomid:example.com").unwrap())
-    ///     .from("t47429-4392820_219380_26003_2265".to_string())
-    ///     .to("t4357353_219380_26003_2265".to_string())
+    /// let mut builder = MessagesRequestBuilder::new(
+    ///     RoomId::try_from("!roomid:example.com").unwrap(),
+    ///     "t47429-4392820_219380_26003_2265".to_string(),
+    /// );
+    ///
+    /// builder.to("t4357353_219380_26003_2265".to_string())
     ///     .direction(Direction::Backward)
-    ///     .limit(UInt::new(10).unwrap());
+    ///     .limit(10);
     ///
     /// let mut client = Client::new(homeserver).unwrap();
     /// # use futures::executor::block_on;
@@ -770,6 +894,303 @@ impl Client {
         self.send(request).await
     }
 
+    /// Send a room message to the homeserver.
+    ///
+    /// Returns the parsed response from the server.
+    ///
+    /// If the encryption feature is enabled this method will transparently
+    /// encrypt the room message if the given room is encrypted.
+    ///
+    /// # Arguments
+    ///
+    /// * `room_id` -  The id of the room that should receive the message.
+    ///
+    /// * `content` - The content of the message event.
+    ///
+    /// * `txn_id` - A unique `Uuid` that can be attached to a `MessageEvent` held
+    /// in it's unsigned field as `transaction_id`. If not given one is created for the
+    /// message.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use matrix_sdk::Room;
+    /// # use std::sync::{Arc, RwLock};
+    /// # use matrix_sdk::{Client, SyncSettings};
+    /// # use url::Url;
+    /// # use futures::executor::block_on;
+    /// # use ruma_identifiers::RoomId;
+    /// # use std::convert::TryFrom;
+    /// use matrix_sdk::events::room::message::{MessageEventContent, TextMessageEventContent};
+    /// # block_on(async {
+    /// # let homeserver = Url::parse("http://localhost:8080").unwrap();
+    /// # let mut client = Client::new(homeserver).unwrap();
+    /// # let room_id = RoomId::try_from("!test:localhost").unwrap();
+    /// use matrix_sdk_common::uuid::Uuid;
+    ///
+    /// let content = MessageEventContent::Text(TextMessageEventContent {
+    ///     body: "Hello world".to_owned(),
+    ///     format: None,
+    ///     formatted_body: None,
+    ///     relates_to: None,
+    /// });
+    /// let txn_id = Uuid::new_v4();
+    /// client.room_send(&room_id, content, Some(txn_id)).await.unwrap();
+    /// # })
+    /// ```
+    pub async fn room_send(
+        &self,
+        room_id: &RoomId,
+        content: MessageEventContent,
+        txn_id: Option<Uuid>,
+    ) -> Result<create_message_event::Response> {
+        #[allow(unused_mut)]
+        let mut event_type = EventType::RoomMessage;
+        #[allow(unused_mut)]
+        let mut raw_content = serde_json::value::to_raw_value(&content)?;
+
+        #[cfg(feature = "encryption")]
+        {
+            let encrypted = {
+                let room = self.base_client.get_joined_room(room_id).await;
+
+                match room {
+                    Some(r) => r.read().await.is_encrypted(),
+                    None => false,
+                }
+            };
+
+            if encrypted {
+                let missing_sessions = {
+                    let room = self.base_client.get_joined_room(room_id).await;
+                    let room = room.as_ref().unwrap().read().await;
+                    let members = room
+                        .joined_members
+                        .keys()
+                        .chain(room.invited_members.keys());
+                    self.base_client.get_missing_sessions(members).await?
+                };
+
+                if !missing_sessions.is_empty() {
+                    self.claim_one_time_keys(missing_sessions).await?;
+                }
+
+                if self.base_client.should_share_group_session(room_id).await {
+                    // TODO we need to make sure that only one such request is
+                    // in flight per room at a time.
+                    let response = self.share_group_session(room_id).await;
+
+                    // If one of the responses failed invalidate the group
+                    // session as using it would end up in undecryptable
+                    // messages.
+                    if let Err(r) = response {
+                        self.base_client.invalidate_group_session(room_id).await;
+                        return Err(r);
+                    }
+                }
+
+                raw_content = serde_json::value::to_raw_value(
+                    &self.base_client.encrypt(room_id, content).await?,
+                )?;
+                event_type = EventType::RoomEncrypted;
+            }
+        }
+
+        let request = create_message_event::Request {
+            room_id: room_id.clone(),
+            event_type,
+            txn_id: txn_id.unwrap_or_else(Uuid::new_v4).to_string(),
+            data: raw_content,
+        };
+
+        let response = self.send(request).await?;
+        Ok(response)
+    }
+
+    async fn send_request(
+        &self,
+        requires_auth: bool,
+        method: HttpMethod,
+        request: http::Request<Vec<u8>>,
+    ) -> Result<reqwest::Response> {
+        let url = request.uri();
+        let path_and_query = url.path_and_query().unwrap();
+        let mut url = self.homeserver.clone();
+
+        url.set_path(path_and_query.path());
+        url.set_query(path_and_query.query());
+
+        let request_builder = match method {
+            HttpMethod::GET => self.http_client.get(url),
+            HttpMethod::POST => {
+                let body = request.body().clone();
+                self.http_client
+                    .post(url)
+                    .body(body)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+            }
+            HttpMethod::PUT => {
+                let body = request.body().clone();
+                self.http_client
+                    .put(url)
+                    .body(body)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+            }
+            HttpMethod::DELETE => {
+                let body = request.body().clone();
+                self.http_client
+                    .delete(url)
+                    .body(body)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+            }
+            method => panic!("Unsupported method {}", method),
+        };
+
+        let request_builder = if requires_auth {
+            let session = self.base_client.session().read().await;
+
+            if let Some(session) = session.as_ref() {
+                let header_value = format!("Bearer {}", &session.access_token);
+                request_builder.header(AUTHORIZATION, header_value)
+            } else {
+                return Err(Error::AuthenticationRequired);
+            }
+        } else {
+            request_builder
+        };
+
+        Ok(request_builder.send().await?)
+    }
+
+    async fn response_to_http_response(
+        &self,
+        mut response: reqwest::Response,
+    ) -> Result<http::Response<Vec<u8>>> {
+        let status = response.status();
+        let mut http_builder = HttpResponse::builder().status(status);
+        let headers = http_builder.headers_mut().unwrap();
+
+        for (k, v) in response.headers_mut().drain() {
+            if let Some(key) = k {
+                headers.insert(key, v);
+            }
+        }
+        let body = response.bytes().await?.as_ref().to_owned();
+        Ok(http_builder.body(body).unwrap())
+    }
+
+    /// Send an arbitrary request to the server, without updating client state.
+    ///
+    /// **Warning:** Because this method *does not* update the client state, it is
+    /// important to make sure than you account for this yourself, and use wrapper methods
+    /// where available.  This method should *only* be used if a wrapper method for the
+    /// endpoint you'd like to use is not available.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - A filled out and valid request for the endpoint to be hit
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use matrix_sdk::{Client, SyncSettings};
+    /// # use futures::executor::block_on;
+    /// # use url::Url;
+    /// # use std::convert::TryFrom;
+    /// # block_on(async {
+    /// # let homeserver = Url::parse("http://localhost:8080").unwrap();
+    /// # let mut client = Client::new(homeserver).unwrap();
+    /// use matrix_sdk::api::r0::profile;
+    /// use matrix_sdk::identifiers::UserId;
+    ///
+    /// // First construct the request you want to make
+    /// // See https://docs.rs/ruma-client-api/latest/ruma_client_api/index.html
+    /// // for all available Endpoints
+    /// let request = profile::get_profile::Request {
+    ///     user_id: UserId::try_from("@example:localhost").unwrap(),
+    /// };
+    ///
+    /// // Start the request using Client::send()
+    /// let response = client.send(request).await.unwrap();
+    ///
+    /// // Check the corresponding Response struct to find out what types are
+    /// // returned
+    /// # })
+    /// ```
+    pub async fn send<Request: Endpoint<ResponseError = crate::api::Error> + Debug>(
+        &self,
+        request: Request,
+    ) -> Result<Request::Response> {
+        let request: http::Request<Vec<u8>> = request.try_into()?;
+        let response = self
+            .send_request(
+                Request::METADATA.requires_authentication,
+                Request::METADATA.method,
+                request,
+            )
+            .await?;
+
+        trace!("Got response: {:?}", response);
+
+        let response = self.response_to_http_response(response).await?;
+
+        Ok(<Request::Response>::try_from(response)?)
+    }
+
+    /// Send an arbitrary request to the server, without updating client state.
+    ///
+    /// This version allows the client to make registration requests.
+    ///
+    /// **Warning:** Because this method *does not* update the client state, it is
+    /// important to make sure than you account for this yourself, and use wrapper methods
+    /// where available.  This method should *only* be used if a wrapper method for the
+    /// endpoint you'd like to use is not available.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - This version of send is for dealing with types that return
+    /// a `UiaaResponse` as the `Endpoint<ResponseError = UiaaResponse>` associated type.
+    ///
+    /// # Examples
+    /// ```
+    /// # use std::convert::TryFrom;
+    /// # use matrix_sdk::{Client, RegistrationBuilder};
+    /// # use matrix_sdk::api::r0::account::register::{RegistrationKind, Request};
+    /// # use matrix_sdk::identifiers::DeviceId;
+    /// # use url::Url;
+    /// # let homeserver = Url::parse("http://example.com").unwrap();
+    /// # let mut rt = tokio::runtime::Runtime::new().unwrap();
+    /// # rt.block_on(async {
+    /// let mut builder = RegistrationBuilder::default();
+    /// builder.password("pass")
+    ///     .username("user")
+    ///     .kind(RegistrationKind::User);
+    /// let mut client = Client::new(homeserver).unwrap();
+    /// let req: Request = builder.into();
+    /// client.send_uiaa(req).await;
+    /// # })
+    /// ```
+    pub async fn send_uiaa<Request: Endpoint<ResponseError = UiaaResponse> + Debug>(
+        &self,
+        request: Request,
+    ) -> Result<Request::Response> {
+        let request: http::Request<Vec<u8>> = request.try_into()?;
+        let response = self
+            .send_request(
+                Request::METADATA.requires_authentication,
+                Request::METADATA.method,
+                request,
+            )
+            .await?;
+
+        trace!("Got response: {:?}", response);
+
+        let response = self.response_to_http_response(response).await?;
+
+        let uiaa: Result<_> = <Request::Response>::try_from(response).map_err(Into::into);
+
+        Ok(uiaa?)
+    }
+
     /// Synchronize the client's state with the latest state on the server.
     ///
     /// If a `StateStore` is provided and this is the initial sync state will
@@ -856,7 +1277,7 @@ impl Client {
     pub async fn sync_forever<C>(
         &self,
         sync_settings: SyncSettings,
-        callback: impl Fn(sync_events::Response) -> C + Send,
+        callback: impl Fn(sync_events::Response) -> C,
     ) where
         C: Future<Output = ()>,
     {
@@ -920,180 +1341,6 @@ impl Client {
                     .expect("No sync token found after initial sync"),
             );
         }
-    }
-
-    async fn send<Request: Endpoint<ResponseError = crate::api::Error> + std::fmt::Debug>(
-        &self,
-        request: Request,
-    ) -> Result<Request::Response> {
-        let request: http::Request<Vec<u8>> = request.try_into()?;
-        let url = request.uri();
-        let path_and_query = url.path_and_query().unwrap();
-        let mut url = self.homeserver.clone();
-
-        url.set_path(path_and_query.path());
-        url.set_query(path_and_query.query());
-
-        trace!("Doing request {:?}", url);
-
-        let request_builder = match Request::METADATA.method {
-            HttpMethod::GET => self.http_client.get(url),
-            HttpMethod::POST => {
-                let body = request.body().clone();
-                self.http_client
-                    .post(url)
-                    .body(body)
-                    .header(reqwest::header::CONTENT_TYPE, "application/json")
-            }
-            HttpMethod::PUT => {
-                let body = request.body().clone();
-                self.http_client
-                    .put(url)
-                    .body(body)
-                    .header(reqwest::header::CONTENT_TYPE, "application/json")
-            }
-            HttpMethod::DELETE => unimplemented!(),
-            _ => panic!("Unsuported method"),
-        };
-
-        let request_builder = if Request::METADATA.requires_authentication {
-            let session = self.base_client.session().read().await;
-
-            if let Some(session) = session.as_ref() {
-                let header_value = format!("Bearer {}", &session.access_token);
-                request_builder.header(AUTHORIZATION, header_value)
-            } else {
-                return Err(Error::AuthenticationRequired);
-            }
-        } else {
-            request_builder
-        };
-        let mut response = request_builder.send().await?;
-
-        trace!("Got response: {:?}", response);
-
-        let status = response.status();
-        let mut http_builder = HttpResponse::builder().status(status);
-        let headers = http_builder.headers_mut().unwrap();
-
-        for (k, v) in response.headers_mut().drain() {
-            if let Some(key) = k {
-                headers.insert(key, v);
-            }
-        }
-        let body = response.bytes().await?.as_ref().to_owned();
-        let http_response = http_builder.body(body).unwrap();
-
-        Ok(<Request::Response>::try_from(http_response)?)
-    }
-
-    /// Send a room message to the homeserver.
-    ///
-    /// Returns the parsed response from the server.
-    ///
-    /// If the encryption feature is enabled this method will transparently
-    /// encrypt the room message if the given room is encrypted.
-    ///
-    /// # Arguments
-    ///
-    /// * `room_id` -  The id of the room that should receive the message.
-    ///
-    /// * `content` - The content of the message event.
-    ///
-    /// * `txn_id` - A unique `Uuid` that can be attached to a `MessageEvent` held
-    /// in it's unsigned field as `transaction_id`. If not given one is created for the
-    /// message.
-    ///
-    /// # Example
-    /// ```no_run
-    /// # use matrix_sdk::Room;
-    /// # use std::sync::{Arc, RwLock};
-    /// # use matrix_sdk::{Client, SyncSettings};
-    /// # use url::Url;
-    /// # use futures::executor::block_on;
-    /// # use ruma_identifiers::RoomId;
-    /// # use std::convert::TryFrom;
-    /// use matrix_sdk::events::room::message::{MessageEventContent, TextMessageEventContent};
-    /// # block_on(async {
-    /// # let homeserver = Url::parse("http://localhost:8080").unwrap();
-    /// # let mut client = Client::new(homeserver).unwrap();
-    /// # let room_id = RoomId::try_from("!test:localhost").unwrap();
-    /// use matrix_sdk_common::uuid::Uuid;
-    ///
-    /// let content = MessageEventContent::Text(TextMessageEventContent {
-    ///     body: "Hello world".to_owned(),
-    ///     format: None,
-    ///     formatted_body: None,
-    ///     relates_to: None,
-    /// });
-    /// let txn_id = Uuid::new_v4();
-    /// client.room_send(&room_id, content, Some(txn_id)).await.unwrap();
-    /// })
-    /// ```
-    pub async fn room_send(
-        &self,
-        room_id: &RoomId,
-        content: MessageEventContent,
-        txn_id: Option<Uuid>,
-    ) -> Result<create_message_event::Response> {
-        #[allow(unused_mut)]
-        let mut event_type = EventType::RoomMessage;
-        #[allow(unused_mut)]
-        let mut raw_content = serde_json::value::to_raw_value(&content)?;
-
-        #[cfg(feature = "encryption")]
-        {
-            let encrypted = {
-                let room = self.base_client.get_joined_room(room_id).await;
-
-                match room {
-                    Some(r) => r.read().await.is_encrypted(),
-                    None => false,
-                }
-            };
-
-            if encrypted {
-                let missing_sessions = {
-                    let room = self.base_client.get_joined_room(room_id).await;
-                    let room = room.as_ref().unwrap().read().await;
-                    let users = room.members.keys();
-                    self.base_client.get_missing_sessions(users).await?
-                };
-
-                if !missing_sessions.is_empty() {
-                    self.claim_one_time_keys(missing_sessions).await?;
-                }
-
-                if self.base_client.should_share_group_session(room_id).await {
-                    // TODO we need to make sure that only one such request is
-                    // in flight per room at a time.
-                    let response = self.share_group_session(room_id).await;
-
-                    // If one of the responses failed invalidate the group
-                    // session as using it would end up in undecryptable
-                    // messages.
-                    if let Err(r) = response {
-                        self.base_client.invalidate_group_session(room_id).await;
-                        return Err(r);
-                    }
-                }
-
-                raw_content = serde_json::value::to_raw_value(
-                    &self.base_client.encrypt(room_id, content).await?,
-                )?;
-                event_type = EventType::RoomEncrypted;
-            }
-        }
-
-        let request = create_message_event::Request {
-            room_id: room_id.clone(),
-            event_type,
-            txn_id: txn_id.unwrap_or_else(Uuid::new_v4).to_string(),
-            data: raw_content,
-        };
-
-        let response = self.send(request).await?;
-        Ok(response)
     }
 
     /// Claim one-time keys creating new Olm sessions.
@@ -1239,17 +1486,21 @@ impl Client {
 #[cfg(test)]
 mod test {
     use super::{
-        ban_user, create_receipt, create_typing_event, forget_room, invite_user, kick_user,
-        leave_room, set_read_marker, Invite3pid, MessageEventContent,
+        api::r0::uiaa::AuthData,
+        ban_user, create_receipt, create_typing_event, forget_room, get_public_rooms,
+        get_public_rooms_filtered::{self, Filter},
+        invite_user, kick_user, leave_room,
+        register::RegistrationKind,
+        set_read_marker, Invite3pid, MessageEventContent,
     };
     use super::{Client, ClientConfig, Session, SyncSettings, Url};
     use crate::events::collections::all::RoomEvent;
-    use crate::events::room::member::MembershipState;
     use crate::events::room::message::TextMessageEventContent;
     use crate::identifiers::{EventId, RoomId, RoomIdOrAliasId, UserId};
+    use crate::{RegistrationBuilder, RoomListFilterBuilder};
 
     use matrix_sdk_base::JsonStore;
-    use matrix_sdk_test::{EventBuilder, EventsFile};
+    use matrix_sdk_test::{test_json, EventBuilder, EventsJson};
     use mockito::{mock, Matcher};
     use tempfile::tempdir;
 
@@ -1275,7 +1526,7 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/sync\?.*$".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/sync.json")
+        .with_body(test_json::SYNC.to_string())
         .create();
 
         let dir = tempdir().unwrap();
@@ -1313,7 +1564,7 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/sync\?.*$".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/leave_event_sync.json")
+        .with_body(test_json::LEAVE_SYNC_EVENT.to_string())
         .create();
 
         joined_client.sync(SyncSettings::default()).await.unwrap();
@@ -1340,7 +1591,7 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/sync\?.*$".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/sync.json")
+        .with_body(test_json::SYNC.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1367,8 +1618,8 @@ mod test {
         client.restore_login(session).await.unwrap();
 
         let mut response = EventBuilder::default()
-            .add_room_event(EventsFile::Member, RoomEvent::RoomMember)
-            .add_room_event(EventsFile::PowerLevels, RoomEvent::RoomPowerLevels)
+            .add_room_event(EventsJson::Member, RoomEvent::RoomMember)
+            .add_room_event(EventsJson::PowerLevels, RoomEvent::RoomPowerLevels)
             .build_sync_response();
 
         client
@@ -1393,7 +1644,7 @@ mod test {
 
         let _m = mock("POST", "/_matrix/client/r0/login")
             .with_status(403)
-            .with_body_from_file("../test_data/login_response_error.json")
+            .with_body(test_json::LOGIN_RESPONSE_ERR.to_string())
             .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1428,6 +1679,44 @@ mod test {
     }
 
     #[tokio::test]
+    async fn register_error() {
+        let homeserver = Url::from_str(&mockito::server_url()).unwrap();
+
+        let _m = mock("POST", "/_matrix/client/r0/register")
+            .with_status(403)
+            .with_body(test_json::REGISTRATION_RESPONSE_ERR.to_string())
+            .create();
+
+        let mut user = RegistrationBuilder::default();
+
+        user.username("user")
+            .password("password")
+            .auth(AuthData::FallbackAcknowledgement {
+                session: "foobar".to_string(),
+            })
+            .kind(RegistrationKind::User);
+
+        let client = Client::new(homeserver).unwrap();
+
+        if let Err(err) = client.register_user(user).await {
+            if let crate::Error::UiaaError(crate::FromHttpResponseError::Http(
+                // TODO this should be a UiaaError need to investigate
+                crate::ServerError::Unknown(e),
+            )) = err
+            {
+                assert!(e.to_string().starts_with("EOF while parsing"))
+            } else {
+                panic!(
+                    "found the wrong `Error` type {:#?}, expected `ServerError::Unknown",
+                    err
+                );
+            }
+        } else {
+            panic!("this request should return an `Err` variant")
+        }
+    }
+
+    #[tokio::test]
     async fn join_room_by_id() {
         let homeserver = Url::from_str(&mockito::server_url()).unwrap();
 
@@ -1442,7 +1731,7 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/rooms/.*/join".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/room_id.json")
+        .with_body(test_json::ROOM_ID.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1471,7 +1760,7 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/join/".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/room_id.json")
+        .with_body(test_json::ROOM_ID.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1507,7 +1796,7 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/rooms/.*/invite".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/logout_response.json")
+        .with_body(test_json::LOGOUT.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1534,7 +1823,8 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/rooms/.*/invite".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/logout_response.json")
+        // empty JSON object
+        .with_body(test_json::LOGOUT.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1557,6 +1847,64 @@ mod test {
 
     #[tokio::test]
     #[allow(irrefutable_let_patterns)]
+    async fn room_search_all() {
+        let homeserver = Url::from_str(&mockito::server_url()).unwrap();
+
+        let _m = mock(
+            "GET",
+            Matcher::Regex(r"^/_matrix/client/r0/publicRooms".to_string()),
+        )
+        .with_status(200)
+        .with_body(test_json::PUBLIC_ROOMS.to_string())
+        .create();
+
+        let client = Client::new(homeserver).unwrap();
+
+        if let get_public_rooms::Response { chunk, .. } =
+            client.public_rooms(Some(10), None, None).await.unwrap()
+        {
+            assert_eq!(chunk.len(), 1)
+        }
+    }
+
+    #[tokio::test]
+    #[allow(irrefutable_let_patterns)]
+    async fn room_search_filtered() {
+        let homeserver = Url::from_str(&mockito::server_url()).unwrap();
+        let user = UserId::try_from("@example:localhost").unwrap();
+
+        let session = Session {
+            access_token: "1234".to_owned(),
+            user_id: user.clone(),
+            device_id: "DEVICEID".to_owned(),
+        };
+
+        let _m = mock(
+            "POST",
+            Matcher::Regex(r"^/_matrix/client/r0/publicRooms".to_string()),
+        )
+        .with_status(200)
+        .with_body(test_json::PUBLIC_ROOMS.to_string())
+        .create();
+
+        let client = Client::new(homeserver).unwrap();
+        client.restore_login(session).await.unwrap();
+
+        let generic_search_term = Some("cheese".to_string());
+        let mut request = RoomListFilterBuilder::default();
+        request.filter(Filter {
+            generic_search_term,
+        });
+
+        if let get_public_rooms_filtered::Response { chunk, .. } =
+            client.public_rooms_filtered(request).await.unwrap()
+        {
+            assert_eq!(chunk.len(), 1)
+        }
+    }
+
+    #[tokio::test]
+    #[allow(irrefutable_let_patterns)]
     async fn leave_room() {
         let homeserver = Url::from_str(&mockito::server_url()).unwrap();
 
@@ -1572,7 +1920,7 @@ mod test {
         )
         .with_status(200)
         // this is an empty JSON object
-        .with_body_from_file("../test_data/logout_response.json")
+        .with_body(test_json::LOGOUT.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1608,7 +1956,7 @@ mod test {
         )
         .with_status(200)
         // this is an empty JSON object
-        .with_body_from_file("../test_data/logout_response.json")
+        .with_body(test_json::LOGOUT.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1643,7 +1991,7 @@ mod test {
         )
         .with_status(200)
         // this is an empty JSON object
-        .with_body_from_file("../test_data/logout_response.json")
+        .with_body(test_json::LOGOUT.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1678,7 +2026,7 @@ mod test {
         )
         .with_status(200)
         // this is an empty JSON object
-        .with_body_from_file("../test_data/logout_response.json")
+        .with_body(test_json::LOGOUT.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1714,7 +2062,7 @@ mod test {
         )
         .with_status(200)
         // this is an empty JSON object
-        .with_body_from_file("../test_data/logout_response.json")
+        .with_body(test_json::LOGOUT.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1750,7 +2098,7 @@ mod test {
         )
         .with_status(200)
         // this is an empty JSON object
-        .with_body_from_file("../test_data/logout_response.json")
+        .with_body(test_json::LOGOUT.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1785,7 +2133,7 @@ mod test {
         )
         .with_status(200)
         // this is an empty JSON object
-        .with_body_from_file("../test_data/logout_response.json")
+        .with_body(test_json::LOGOUT.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1828,7 +2176,7 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/rooms/.*/send/".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/event_id.json")
+        .with_body(test_json::EVENT_ID.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1867,7 +2215,7 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/sync\?.*$".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/sync.json")
+        .with_body(test_json::SYNC.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1885,11 +2233,7 @@ mod test {
             .read()
             .await;
 
-        assert_eq!(2, room.members.len());
-        for member in room.members.values() {
-            assert_eq!(MembershipState::Join, member.membership);
-        }
-
+        assert_eq!(1, room.joined_members.len());
         assert!(room.power_levels.is_some())
     }
 
@@ -1908,7 +2252,7 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/sync\?.*$".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/sync_with_summary.json")
+        .with_body(test_json::DEFAULT_SYNC_SUMMARY.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -1922,7 +2266,7 @@ mod test {
             room_names.push(room.read().await.display_name())
         }
 
-        assert_eq!(vec!["example, example2"], room_names);
+        assert_eq!(vec!["example2"], room_names);
     }
 
     #[tokio::test]
@@ -1944,7 +2288,7 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/sync\?.*$".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/invite_sync.json")
+        .with_body(test_json::INVITE_SYNC.to_string())
         .create();
 
         let _response = client.sync(SyncSettings::default()).await.unwrap();
@@ -1978,7 +2322,7 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/sync\?.*$".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/leave_sync.json")
+        .with_body(test_json::LEAVE_SYNC.to_string())
         .create();
 
         let _response = client.sync(SyncSettings::default()).await.unwrap();
@@ -2008,12 +2352,12 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/sync\?.*$".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/sync.json")
+        .with_body(test_json::SYNC.to_string())
         .create();
 
         let _m = mock("POST", "/_matrix/client/r0/login")
             .with_status(200)
-            .with_body_from_file("../test_data/login_response.json")
+            .with_body(test_json::LOGIN.to_string())
             .create();
 
         let dir = tempdir().unwrap();
@@ -2054,7 +2398,7 @@ mod test {
 
         let _m = mock("POST", "/_matrix/client/r0/login")
             .with_status(200)
-            .with_body_from_file("../test_data/login_response.json")
+            .with_body(test_json::LOGIN.to_string())
             .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -2083,7 +2427,7 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/sync\?.*$".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/sync.json")
+        .with_body(test_json::SYNC.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();
@@ -2113,7 +2457,7 @@ mod test {
             Matcher::Regex(r"^/_matrix/client/r0/sync\?.*$".to_string()),
         )
         .with_status(200)
-        .with_body_from_file("../test_data/sync.json")
+        .with_body(test_json::SYNC.to_string())
         .create();
 
         let client = Client::new(homeserver).unwrap();

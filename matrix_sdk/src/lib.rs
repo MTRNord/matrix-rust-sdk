@@ -36,9 +36,10 @@
     unused_qualifications
 )]
 
+pub use matrix_sdk_base::Error as BaseError;
 #[cfg(not(target_arch = "wasm32"))]
 pub use matrix_sdk_base::JsonStore;
-pub use matrix_sdk_base::{EventEmitter, Room, Session, SyncRoom};
+pub use matrix_sdk_base::{CustomOrRawEvent, EventEmitter, Room, Session, SyncRoom};
 pub use matrix_sdk_base::{RoomState, StateStore};
 pub use matrix_sdk_common::*;
 pub use reqwest::header::InvalidHeaderValue;
@@ -51,7 +52,9 @@ mod error;
 mod request_builder;
 pub use client::{Client, ClientConfig, SyncSettings};
 pub use error::{Error, Result};
-pub use request_builder::{MessagesRequestBuilder, RoomBuilder};
+pub use request_builder::{
+    MessagesRequestBuilder, RegistrationBuilder, RoomBuilder, RoomListFilterBuilder,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
