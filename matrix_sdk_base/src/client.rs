@@ -82,6 +82,12 @@ pub struct AdditionalUnsignedData {
     pub prev_content: Option<EventJson<MemberEventContent>>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RelatesToHelper {
+    #[serde(rename = "m.relates_to", skip_serializing_if = "Option::is_none")]
+    pub relates_to: Option<RelatesTo>,
+}
+
 /// Transform room event by hoisting `prev_content` field from `unsigned` to the top level.
 ///
 /// Due to a [bug in synapse][synapse-bug], `prev_content` often ends up in `unsigned` contrary to
@@ -708,6 +714,8 @@ impl BaseClient {
         room_id: &RoomId,
         event: &mut EventJson<RoomEvent>,
     ) -> Result<(Option<EventJson<RoomEvent>>, bool)> {
+        let helper: Helper = serde_json::from_str(event.json().get());
+        println!("{:?}", helper);
         match event.deserialize() {
             #[allow(unused_mut)]
             Ok(mut e) => {
