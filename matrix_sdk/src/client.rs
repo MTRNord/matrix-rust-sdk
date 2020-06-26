@@ -64,7 +64,7 @@ pub struct Client {
     /// The underlying HTTP client.
     http_client: reqwest::Client,
     /// User session data.
-    pub(crate) base_client: BaseClient,
+    pub base_client: BaseClient,
 }
 
 // #[cfg_attr(tarpaulin, skip)]
