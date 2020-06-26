@@ -62,6 +62,12 @@ use tracing::{debug, error, info, instrument, trace, warn};
 /// These keys need to be periodically uploaded to the server.
 pub type OneTimeKeys = BTreeMap<AlgorithmAndDeviceId, OneTimeKey>;
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RelatesToHelper {
+    #[serde(rename = "m.relates_to", skip_serializing_if = "Option::is_none")]
+    pub relates_to: Option<RelatesTo>,
+}
+
 /// State machine implementation of the Olm/Megolm encryption protocol used for
 /// Matrix end to end encryption.
 pub struct OlmMachine {
@@ -1449,13 +1455,6 @@ impl OlmMachine {
             }
         }
     }
-    
-    #[derive(Clone, Debug, Deserialize, Serialize)]
-    pub struct RelatesToHelper {
-        #[serde(rename = "m.relates_to", skip_serializing_if = "Option::is_none")]
-        pub relates_to: Option<RelatesTo>,
-    }
-
 
     /// Decrypt an event from a room timeline.
     ///
