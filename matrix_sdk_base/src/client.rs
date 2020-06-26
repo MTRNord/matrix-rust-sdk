@@ -717,7 +717,7 @@ impl BaseClient {
         room_id: &RoomId,
         event: &mut EventJson<RoomEvent>,
     ) -> Result<(Option<EventJson<RoomEvent>>, bool)> {
-        let helper: RelatesToHelper = serde_json::from_str(event.json().get());
+        let helper: RelatesToHelper = serde_json::from_str(event.json().get()).unwrap();
         println!("RelatesToHelper: {:?}", helper);
         match event.deserialize() {
             #[allow(unused_mut)]
