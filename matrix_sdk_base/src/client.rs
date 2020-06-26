@@ -93,7 +93,7 @@ pub struct RelatesToHelper {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Foo {
-    content: ReplyToHelper
+    content: RelatesToHelper
 }
 
 /// Transform room event by hoisting `prev_content` field from `unsigned` to the top level.
