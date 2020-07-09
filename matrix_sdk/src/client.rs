@@ -38,7 +38,6 @@ use http::Method as HttpMethod;
 use http::Response as HttpResponse;
 use reqwest::header::{HeaderValue, InvalidHeaderValue, AUTHORIZATION};
 use url::Url;
-use crate::js_int::UInt;
 
 use crate::events::room::message::MessageEventContent;
 use crate::events::EventType;
