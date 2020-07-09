@@ -43,6 +43,7 @@ pub use matrix_sdk_base::{CustomOrRawEvent, EventEmitter, Room, Session, SyncRoo
 #[cfg(feature = "messages")]
 pub use matrix_sdk_base::{MessageQueue, MessageWrapper, PossiblyRedactedExt};
 pub use matrix_sdk_base::{RoomState, StateStore};
+pub use matrix_sdk_base::RoomMember;
 pub use matrix_sdk_common::*;
 pub use reqwest::header::InvalidHeaderValue;
 

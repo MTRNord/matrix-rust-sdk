@@ -49,7 +49,7 @@ pub use client::{BaseClient, BaseClientConfig, RoomState, RoomStateType};
 pub use event_emitter::{CustomOrRawEvent, EventEmitter, SyncRoom};
 pub use models::Room;
 pub use state::{AllRooms, ClientState};
-
+pub use models::RoomMember;
 #[cfg(feature = "encryption")]
 pub use matrix_sdk_crypto::{Device, TrustState};
 
